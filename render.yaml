@@ -1,0 +1,25 @@
+services:
+  - type: web
+    name: miki-whatsapp
+    runtime: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: GREEN_API_URL
+        sync: false
+      - key: GREEN_API_INSTANCE
+        sync: false
+      - key: GREEN_API_TOKEN
+        sync: false
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: GEMINI_MODEL
+        value: gemini-2.5-flash
+      - key: MAX_HISTORY
+        value: "20"
+      - key: DATABASE_PATH
+        value: /data/conversations.db
+    disk:
+      name: data
+      mountPath: /data
+      sizeGB: 1

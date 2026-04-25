@@ -1,0 +1,11 @@
+.env
+.env.local
+.env.*.local
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+*.db
+conversations.db
+.DS_Store
