@@ -86,32 +86,32 @@ def create_calendar_event(
 
 def update_calendar_event(
     event_id: str,
-    title: str | None = None,
-    start_iso: str | None = None,
-    end_iso: str | None = None,
-    description: str | None = None,
-    location: str | None = None,
+    title: str = "",
+    start_iso: str = "",
+    end_iso: str = "",
+    description: str = "",
+    location: str = "",
 ) -> dict:
     """Update an existing event. Use the event_id from list_my_events.
 
-    Only pass the fields you want to change; leave the rest as None.
+    Pass only the fields you want to change; leave others as empty string.
 
     Args:
         event_id: The event's ID (from list_my_events).
-        title: New title, or None to keep current.
-        start_iso: New start (ISO 8601 with timezone), or None.
-        end_iso: New end, or None.
-        description: New description, or None.
-        location: New location, or None.
+        title: New title (empty to keep current).
+        start_iso: New start (ISO 8601 with timezone, empty to keep current).
+        end_iso: New end (ISO 8601 with timezone, empty to keep current).
+        description: New description (empty to keep current).
+        location: New location (empty to keep current).
     """
     try:
         event = calendar_service.update_event(
             event_id=event_id,
-            title=title,
-            start_iso=start_iso,
-            end_iso=end_iso,
-            description=description,
-            location=location,
+            title=title or None,
+            start_iso=start_iso or None,
+            end_iso=end_iso or None,
+            description=description or None,
+            location=location or None,
         )
         return {"updated": event}
     except Exception as e:
@@ -146,18 +146,24 @@ def _build_system_prompt() -> str:
     weekday_he = ["שני", "שלישי", "רביעי", "חמישי", "שישי", "שבת", "ראשון"][now.weekday()]
     return f"""{settings.SYSTEM_PROMPT}
 
-כלים זמינים:
-- ליומן Google Calendar: list_my_events, create_calendar_event, update_calendar_event, delete_calendar_event
-- פגישות עבודה (משרד הבריאות, Teams, ועוד) מסוננות אוטומטית — אם דודי שואל על "פגישות" סתם, מציגים רק פרטיות. רק אם הוא אומר "כולל עבודה" / "פגישות עבודה" — מעבירים include_work=True
+יש לך גישה לכלים אמיתיים ליומן Google Calendar של דודי. **חובה** להשתמש בהם — לא לדמיין או להמציא תשובות:
+- list_my_events — לקריאת אירועים
+- create_calendar_event — להוספת אירוע חדש
+- update_calendar_event — לשינוי אירוע קיים
+- delete_calendar_event — למחיקת אירוע
+
+כשדודי שואל על היומן או מבקש להוסיף/לשנות/למחוק — **קרא לפונקציה המתאימה ישירות** ואז ענה לו עם התוצאה.
+לעולם אל תגיד "אני אוסיף" / "אני אבדוק" בלי לקרוא לפונקציה. אם אתה צריך מידע מהיומן — קרא לפונקציה.
+
+פגישות עבודה (משרד הבריאות, Teams, ועוד) מסוננות אוטומטית. אם דודי שואל על "פגישות" סתם — include_work=False (ברירת מחדל). רק אם הוא אומר במפורש "כולל עבודה" — include_work=True.
 
 מידע נוכחי:
 - היום: יום {weekday_he}, {now.strftime('%d/%m/%Y')}
 - השעה: {now.strftime('%H:%M')} (שעון ישראל)
+- כשיוצרים אירוע: השתמש בפורמט ISO 8601 עם איזור זמן ישראל (+03:00)
 
-הנחיות חשובות:
-- כשיוצרים אירוע: השתמש בפורמט ISO 8601 עם איזור זמן ישראל (+03:00 או +02:00 לפי DST)
-- לפני מחיקת אירוע — תאשר עם דודי שזה האירוע הנכון
-- יוזמות: רק אם יש משהו מיוחד (התנגשות, פער חריג, או שאלה ברורה ממה שדודי כתב). לא להציע סתם.
+לפני מחיקת אירוע — תאשר עם דודי שזה האירוע הנכון.
+יוזמות: רק אם יש משהו מיוחד (התנגשות, פער חריג). לא להציע סתם.
 """
 
 
@@ -192,6 +198,10 @@ def get_response(phone: str, message: str, sender_name: str = "") -> str:
     config = types.GenerateContentConfig(
         system_instruction=_build_system_prompt(),
         tools=_TOOLS,
+        automatic_function_calling=types.AutomaticFunctionCallingConfig(
+            disable=False,
+            maximum_remote_calls=8,
+        ),
         max_output_tokens=2000,
         temperature=0.7,
     )
@@ -202,7 +212,12 @@ def get_response(phone: str, message: str, sender_name: str = "") -> str:
         config=config,
     )
 
-    reply = _extract_text(response)
+    afc_calls = getattr(response, "automatic_function_calling_history", None) or []
+    if afc_calls:
+        logger.info(f"Function calls executed: {len(afc_calls)}")
+
+    reply = _extract_text(response) or getattr(response, "text", "") or ""
+    reply = reply.strip()
     if not reply:
         reply = "סליחה, לא הצלחתי לענות הפעם. נסה שוב."
 
