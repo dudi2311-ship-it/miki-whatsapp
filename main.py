@@ -53,18 +53,31 @@ async def webhook_test(request: Request):
     Use this for development/debugging instead of /webhook/green-api so we
     don't accidentally trigger WhatsApp spam protection by sending messages
     to non-existent test numbers.
+
+    Returns a detailed error trace on failure so we can debug remotely.
     """
-    data = await request.json()
-    text = (
-        data.get("messageData", {})
-        .get("textMessageData", {})
-        .get("textMessage", "")
-    )
-    phone = data.get("senderData", {}).get("chatId", "").replace("@c.us", "")
-    if not text.strip() or not phone:
-        return {"error": "missing text or phone"}
-    reply = get_response(phone, text, data.get("senderData", {}).get("senderName", ""))
-    return {"phone": phone, "user_message": text, "miki_reply": reply}
+    import traceback
+    try:
+        data = await request.json()
+        text = (
+            data.get("messageData", {})
+            .get("textMessageData", {})
+            .get("textMessage", "")
+        )
+        phone = data.get("senderData", {}).get("chatId", "").replace("@c.us", "")
+        if not text.strip() or not phone:
+            return {"error": "missing text or phone"}
+        reply = get_response(phone, text, data.get("senderData", {}).get("senderName", ""))
+        return {"phone": phone, "user_message": text, "miki_reply": reply}
+    except Exception as e:
+        return JSONResponse(
+            {
+                "error": type(e).__name__,
+                "message": str(e),
+                "traceback": traceback.format_exc(),
+            },
+            status_code=500,
+        )
 
 
 @app.post("/webhook/green-api")
