@@ -120,7 +120,10 @@ def update_calendar_event(
 
 
 def delete_calendar_event(event_id: str) -> dict:
-    """Delete an event by its ID. Confirm with the user before calling this.
+    """Delete a calendar event by its ID.
+
+    To find an event ID, first call list_my_events. When the user asks to
+    delete by name, list events matching the name and delete each by ID.
 
     Args:
         event_id: The event's ID (from list_my_events).
@@ -162,7 +165,8 @@ def _build_system_prompt() -> str:
 - השעה: {now.strftime('%H:%M')} (שעון ישראל)
 - כשיוצרים אירוע: השתמש בפורמט ISO 8601 עם איזור זמן ישראל (+03:00)
 
-לפני מחיקת אירוע — תאשר עם דודי שזה האירוע הנכון.
+למחיקה: אם יש כמה אירועים שמתאימים לתיאור של דודי — תאשר איזה למחוק. אם הוא ביקש למחוק מספר אירועים מפורשות — תקרא ל-delete_calendar_event לכל אחד מהם.
+
 יוזמות: רק אם יש משהו מיוחד (התנגשות, פער חריג). לא להציע סתם.
 """
 
