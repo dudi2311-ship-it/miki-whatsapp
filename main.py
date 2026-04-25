@@ -46,6 +46,27 @@ async def health():
     return {"status": "ok", "agent": "miki"}
 
 
+@app.post("/webhook/test")
+async def webhook_test(request: Request):
+    """Dry-run version of the webhook — runs the agent but never sends via Green API.
+
+    Use this for development/debugging instead of /webhook/green-api so we
+    don't accidentally trigger WhatsApp spam protection by sending messages
+    to non-existent test numbers.
+    """
+    data = await request.json()
+    text = (
+        data.get("messageData", {})
+        .get("textMessageData", {})
+        .get("textMessage", "")
+    )
+    phone = data.get("senderData", {}).get("chatId", "").replace("@c.us", "")
+    if not text.strip() or not phone:
+        return {"error": "missing text or phone"}
+    reply = get_response(phone, text, data.get("senderData", {}).get("senderName", ""))
+    return {"phone": phone, "user_message": text, "miki_reply": reply}
+
+
 @app.post("/webhook/green-api")
 async def webhook(request: Request):
     """Handle incoming messages from Green API."""
