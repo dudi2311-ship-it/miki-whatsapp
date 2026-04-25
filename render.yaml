@@ -17,9 +17,7 @@ services:
         value: gemini-2.5-flash
       - key: MAX_HISTORY
         value: "20"
-      - key: DATABASE_PATH
-        value: /data/conversations.db
-    disk:
-      name: data
-      mountPath: /data
-      sizeGB: 1
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_KEY
+        sync: false

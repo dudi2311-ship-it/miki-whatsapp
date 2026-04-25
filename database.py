@@ -1,65 +1,57 @@
-"""Conversation memory using SQLite. Stores message history per phone number."""
+"""Conversation memory using Supabase (PostgreSQL).
 
-import sqlite3
-import os
+Stores message history per phone number for multi-turn conversations.
+Persistent across redeploys, viewable in the Supabase dashboard.
+"""
+
+import logging
+from supabase import create_client, Client
+
 from config import settings
 
+logger = logging.getLogger("miki.database")
 
-def _get_db_path() -> str:
-    db_path = settings.DATABASE_PATH
-    db_dir = os.path.dirname(db_path)
-    if db_dir and not os.path.exists(db_dir):
-        os.makedirs(db_dir, exist_ok=True)
-    return db_path
+_client: Client | None = None
 
 
-def _connect():
-    return sqlite3.connect(_get_db_path())
+def _get_client() -> Client:
+    global _client
+    if _client is None:
+        if not settings.SUPABASE_URL or not settings.SUPABASE_KEY:
+            raise RuntimeError(
+                "SUPABASE_URL and SUPABASE_KEY must be set in environment"
+            )
+        _client = create_client(settings.SUPABASE_URL, settings.SUPABASE_KEY)
+    return _client
 
 
 def init_db():
-    conn = _connect()
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS messages (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            phone TEXT NOT NULL,
-            role TEXT NOT NULL,
-            content TEXT NOT NULL,
-            timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
-        )
-    """)
-    conn.execute("""
-        CREATE INDEX IF NOT EXISTS idx_messages_phone
-        ON messages(phone, timestamp DESC)
-    """)
-    conn.commit()
-    conn.close()
+    """No-op: schema is managed via SQL migrations in Supabase."""
+    try:
+        _get_client().table("messages").select("id").limit(1).execute()
+        logger.info("Supabase connection OK")
+    except Exception as e:
+        logger.error(f"Supabase connection failed: {e}")
+        raise
 
 
 def save_message(phone: str, role: str, content: str):
-    conn = _connect()
-    conn.execute(
-        "INSERT INTO messages (phone, role, content) VALUES (?, ?, ?)",
-        (phone, role, content),
-    )
-    conn.commit()
-    conn.close()
+    """Save a message to Supabase."""
+    _get_client().table("messages").insert(
+        {"phone": phone, "role": role, "content": content}
+    ).execute()
 
 
 def get_history(phone: str, limit: int = 20) -> list[dict]:
-    conn = _connect()
-    cursor = conn.execute(
-        """
-        SELECT role, content FROM (
-            SELECT role, content, timestamp
-            FROM messages
-            WHERE phone = ?
-            ORDER BY timestamp DESC
-            LIMIT ?
-        ) sub ORDER BY timestamp ASC
-        """,
-        (phone, limit),
+    """Get recent conversation history for a phone number, oldest first."""
+    response = (
+        _get_client()
+        .table("messages")
+        .select("role, content")
+        .eq("phone", phone)
+        .order("created_at", desc=True)
+        .limit(limit)
+        .execute()
     )
-    history = [{"role": row[0], "content": row[1]} for row in cursor.fetchall()]
-    conn.close()
-    return history
+    rows = list(reversed(response.data or []))
+    return [{"role": r["role"], "content": r["content"]} for r in rows]

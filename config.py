@@ -46,7 +46,8 @@ class Settings:
     SYSTEM_PROMPT: str = os.getenv("SYSTEM_PROMPT", SYSTEM_PROMPT_DEFAULT)
     MAX_HISTORY: int = int(os.getenv("MAX_HISTORY", "20"))
 
-    DATABASE_PATH: str = os.getenv("DATABASE_PATH", "./conversations.db")
+    SUPABASE_URL: str = os.getenv("SUPABASE_URL", "")
+    SUPABASE_KEY: str = os.getenv("SUPABASE_KEY", "")
 
 
 settings = Settings()

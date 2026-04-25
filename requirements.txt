@@ -3,3 +3,4 @@ uvicorn>=0.34,<1.0
 httpx>=0.28,<1.0
 google-generativeai>=0.8,<1.0
 python-dotenv>=1.0,<2.0
+supabase>=2.9,<3.0
