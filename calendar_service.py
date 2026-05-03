@@ -86,10 +86,10 @@ def _format_event(event: dict) -> dict:
 
 def list_events(
     days_ahead: int = 7,
-    include_work: bool = False,
+    include_work: bool = True,
     max_results: int = 50,
 ) -> list[dict]:
-    """List upcoming events. Filters out work meetings unless include_work=True."""
+    """List upcoming events. Work events are included by default."""
     now = datetime.now(timezone.utc)
     time_min = now.isoformat()
     time_max = (now + timedelta(days=days_ahead)).isoformat()

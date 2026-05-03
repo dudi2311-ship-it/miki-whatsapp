@@ -25,17 +25,16 @@ ISRAEL_TZ = ZoneInfo("Asia/Jerusalem")
 _client = genai.Client(api_key=settings.GEMINI_API_KEY)
 
 
-def list_my_events(days_ahead: int = 7, include_work: bool = False) -> dict:
+def list_my_events(days_ahead: int = 7, include_work: bool = True) -> dict:
     """List upcoming events from the user's Google Calendar.
 
     Use this when the user asks about their schedule, what's coming up,
-    or specific upcoming events. Work meetings are filtered out by default
-    (per user preference); set include_work=True only if the user explicitly
-    asks to include work meetings.
+    or specific upcoming events. Work meetings are included by default.
 
     Args:
         days_ahead: How many days into the future to look. 1 = today, 7 = week.
-        include_work: Set True only if user explicitly asks for work meetings.
+        include_work: Defaults to True (show everything). Set False only if the
+            user explicitly asks to hide work.
 
     Returns:
         A dict with 'events' (list of events with id, title, start, end, location).
@@ -274,7 +273,7 @@ def _build_system_prompt() -> str:
 כשדודי שואל על משהו שדורש מידע עדכני (מה קרה, מה המחיר, מתי פתוח) — **קרא ל-web_search** במקום לנחש.
 לעולם אל תגיד "אני אוסיף" / "אני אבדוק" בלי לקרוא לפונקציה.
 
-פגישות עבודה (משרד הבריאות, Teams, ועוד) מסוננות אוטומטית. אם דודי שואל על "פגישות" סתם — include_work=False (ברירת מחדל). רק אם הוא אומר במפורש "כולל עבודה" — include_work=True.
+היומן כולל הכל — אישי ועבודה. אין סינון אוטומטי. אירועי עבודה מסומנים ב-`is_work: true` כדי שתוכל להזכיר את ההקשר אם רלוונטי.
 
 מידע נוכחי:
 - היום: יום {weekday_he}, {now.strftime('%d/%m/%Y')}

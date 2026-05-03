@@ -76,3 +76,44 @@ def set_state(key: str, value: str) -> None:
     _get_client().table("agent_state").upsert(
         {"key": key, "value": value}, on_conflict="key"
     ).execute()
+
+
+def replace_mirrored_events(events: list[dict]) -> int:
+    """Replace today's mirrored events with a fresh set from the iPhone bridge.
+
+    Each event must have: id, title, start_iso, end_iso (optional), location
+    (optional), notes (optional), calendar_name (optional).
+    """
+    client = _get_client()
+    client.table("mirrored_events").delete().neq("id", "__never__").execute()
+    if not events:
+        return 0
+    rows = [
+        {
+            "id": e["id"],
+            "title": e.get("title") or "(ללא כותרת)",
+            "start_iso": e.get("start_iso", ""),
+            "end_iso": e.get("end_iso", ""),
+            "location": e.get("location", ""),
+            "notes": e.get("notes", ""),
+            "calendar_name": e.get("calendar_name", ""),
+        }
+        for e in events
+        if e.get("id")
+    ]
+    if rows:
+        client.table("mirrored_events").upsert(rows, on_conflict="id").execute()
+    return len(rows)
+
+
+def list_mirrored_events_today(today_yyyy_mm_dd: str) -> list[dict]:
+    """Return mirrored events whose start_iso falls on the given local date."""
+    response = (
+        _get_client()
+        .table("mirrored_events")
+        .select("*")
+        .like("start_iso", f"{today_yyyy_mm_dd}%")
+        .order("start_iso")
+        .execute()
+    )
+    return response.data or []

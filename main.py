@@ -12,7 +12,13 @@ from fastapi.responses import JSONResponse
 
 from config import settings
 from agent import get_response
-from database import init_db, get_state, set_state
+from database import (
+    init_db,
+    get_state,
+    set_state,
+    replace_mirrored_events,
+    list_mirrored_events_today,
+)
 import calendar_service
 import gmail_service
 
@@ -156,26 +162,39 @@ async def send_whatsapp_message(chat_id: str, message: str):
 
 def _format_morning_brief() -> str:
     now = datetime.now(ISRAEL_TZ)
+    today_ymd = now.strftime("%Y-%m-%d")
     weekday_he = ["שני", "שלישי", "רביעי", "חמישי", "שישי", "שבת", "ראשון"][now.weekday()]
     lines = [f"בוקר טוב ☀️ יום {weekday_he}, {now.strftime('%d/%m')}"]
 
+    combined: list[tuple[str, str, str]] = []  # (time, title, source)
+
     try:
-        events = calendar_service.list_events(days_ahead=1, include_work=False)
-        today_events = [
-            e for e in events
-            if e.get("start", "").startswith(now.strftime("%Y-%m-%d"))
-        ]
-        if today_events:
-            lines.append("\n📅 היום ביומן (פרטי):")
-            for e in today_events:
-                start = e.get("start", "")
+        events = calendar_service.list_events(days_ahead=1, include_work=True)
+        for e in events:
+            start = e.get("start", "")
+            if start.startswith(today_ymd):
                 time_str = start[11:16] if len(start) >= 16 else ""
-                lines.append(f"  • {time_str} {e.get('title', '')}")
-        else:
-            lines.append("\n📅 אין אירועים פרטיים ביומן היום.")
+                source = "💼" if e.get("is_work") else "📅"
+                combined.append((time_str, e.get("title", ""), source))
     except Exception as e:
-        logger.exception("morning brief calendar failed")
-        lines.append(f"\n⚠️ לא הצלחתי למשוך יומן: {e}")
+        logger.exception("morning brief google calendar failed")
+        lines.append(f"\n⚠️ לא הצלחתי למשוך Google Calendar: {e}")
+
+    try:
+        for e in list_mirrored_events_today(today_ymd):
+            start = e.get("start_iso", "")
+            time_str = start[11:16] if len(start) >= 16 else ""
+            combined.append((time_str, e.get("title", ""), "📱"))
+    except Exception as e:
+        logger.exception("morning brief mirrored events failed")
+
+    combined.sort(key=lambda t: t[0] or "99:99")
+    if combined:
+        lines.append("\n📅 היום ביומן:")
+        for time_str, title, source in combined:
+            lines.append(f"  • {source} {time_str} {title}")
+    else:
+        lines.append("\n📅 אין אירועים היום.")
 
     try:
         unread = gmail_service.search_messages(query="is:unread", max_results=5)
@@ -192,6 +211,37 @@ def _format_morning_brief() -> str:
         lines.append(f"\n⚠️ לא הצלחתי למשוך מיילים: {e}")
 
     return "\n".join(lines)
+
+
+@app.post("/sync/iphone-events")
+async def sync_iphone_events(request: Request, x_cron_token: str = Header(default="")):
+    """Receive a fresh batch of iPhone calendar events (the iOS Shortcut bridge).
+
+    Body: {"events": [{"id": "...", "title": "...", "start_iso": "...",
+                       "end_iso": "...", "location": "...", "notes": "...",
+                       "calendar_name": "..."}]}
+
+    Replaces the entire mirrored_events table with the new set.
+    """
+    if not settings.CRON_TOKEN or x_cron_token != settings.CRON_TOKEN:
+        raise HTTPException(status_code=401, detail="bad token")
+
+    try:
+        data = await request.json()
+    except Exception:
+        return JSONResponse({"error": "invalid json"}, status_code=400)
+
+    events = data.get("events") or []
+    if not isinstance(events, list):
+        return JSONResponse({"error": "events must be a list"}, status_code=400)
+
+    try:
+        count = replace_mirrored_events(events)
+    except Exception as e:
+        logger.exception("sync_iphone_events failed")
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+    return {"ok": True, "stored": count}
 
 
 @app.post("/cron/check-mail")
