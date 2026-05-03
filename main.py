@@ -12,7 +12,7 @@ from fastapi.responses import JSONResponse
 
 from config import settings
 from agent import get_response
-from database import init_db
+from database import init_db, get_state, set_state
 import calendar_service
 import gmail_service
 
@@ -192,6 +192,60 @@ def _format_morning_brief() -> str:
         lines.append(f"\n⚠️ לא הצלחתי למשוך מיילים: {e}")
 
     return "\n".join(lines)
+
+
+@app.post("/cron/check-mail")
+async def check_mail(x_cron_token: str = Header(default="")):
+    """Check for new important mail since last run; alert owner via WhatsApp.
+
+    Designed to be hit every 10-15 minutes by an external scheduler.
+    Uses Gmail's category:primary to exclude promotions/social/updates.
+    State is stored in Supabase under the key 'last_mail_check_unix'.
+    """
+    if not settings.CRON_TOKEN or x_cron_token != settings.CRON_TOKEN:
+        raise HTTPException(status_code=401, detail="bad token")
+    if not settings.MIKI_OWNER_CHAT_ID:
+        raise HTTPException(status_code=500, detail="MIKI_OWNER_CHAT_ID not set")
+
+    now_unix = int(time.time())
+    last_str = get_state("last_mail_check_unix")
+    if not last_str:
+        set_state("last_mail_check_unix", str(now_unix))
+        return {"ok": True, "skipped": "first run, baseline saved"}
+
+    try:
+        last_unix = int(last_str)
+    except ValueError:
+        last_unix = now_unix - 900
+
+    try:
+        msgs = gmail_service.search_messages(
+            query=f"is:unread category:primary after:{last_unix}",
+            max_results=10,
+        )
+    except Exception as e:
+        logger.exception("check-mail search failed")
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+    set_state("last_mail_check_unix", str(now_unix))
+
+    if not msgs:
+        return {"ok": True, "new_mail": 0}
+
+    lines = [f"📬 {len(msgs)} מייל{'ים' if len(msgs) != 1 else ''} חדש{'ים' if len(msgs) != 1 else ''}:"]
+    for m in msgs[:5]:
+        sender = m.get("from", "")[:40]
+        subj = m.get("subject", "")[:60]
+        lines.append(f"  • {sender} — {subj}")
+    text = "\n".join(lines)
+
+    try:
+        await send_whatsapp_message(settings.MIKI_OWNER_CHAT_ID, text)
+    except Exception as e:
+        logger.exception("check-mail send failed")
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+    return {"ok": True, "new_mail": len(msgs), "preview": text[:300]}
 
 
 @app.post("/cron/morning-brief")

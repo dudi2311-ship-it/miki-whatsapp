@@ -55,3 +55,24 @@ def get_history(phone: str, limit: int = 20) -> list[dict]:
     )
     rows = list(reversed(response.data or []))
     return [{"role": r["role"], "content": r["content"]} for r in rows]
+
+
+def get_state(key: str) -> str | None:
+    """Read a value from the agent_state key/value table."""
+    response = (
+        _get_client()
+        .table("agent_state")
+        .select("value")
+        .eq("key", key)
+        .limit(1)
+        .execute()
+    )
+    rows = response.data or []
+    return rows[0]["value"] if rows else None
+
+
+def set_state(key: str, value: str) -> None:
+    """Upsert a value in the agent_state key/value table."""
+    _get_client().table("agent_state").upsert(
+        {"key": key, "value": value}, on_conflict="key"
+    ).execute()
