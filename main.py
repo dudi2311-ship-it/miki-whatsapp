@@ -58,24 +58,6 @@ async def health():
     return {"status": "ok", "agent": "miki"}
 
 
-@app.get("/debug/trigger-error")
-async def debug_trigger_error(token: str = ""):
-    """Manually trigger a fake error to verify owner-alert plumbing.
-
-    Hit GET /debug/trigger-error?token=<CRON_TOKEN> — owner should get a
-    🚨 WhatsApp alert. Remove this endpoint once monitoring is confirmed.
-    """
-    if not settings.CRON_TOKEN or token != settings.CRON_TOKEN:
-        raise HTTPException(status_code=401, detail="bad token")
-    try:
-        raise RuntimeError("בדיקת ניטור ידנית — מתפוצץ בכוונה")
-    except Exception as e:
-        debug_text = await notify_owner_error(
-            "debug/trigger-error", e, sender_name="בדיקה ידנית"
-        )
-    return {"ok": True, "alert_text": debug_text}
-
-
 @app.post("/webhook/test")
 async def webhook_test(request: Request):
     """Dry-run version of the webhook — runs the agent but never sends via Green API.
