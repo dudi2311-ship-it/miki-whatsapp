@@ -81,26 +81,30 @@ def set_state(key: str, value: str) -> None:
 def replace_mirrored_events(events: list[dict]) -> int:
     """Replace today's mirrored events with a fresh set from the iPhone bridge.
 
-    Each event must have: id, title, start_iso, end_iso (optional), location
-    (optional), notes (optional), calendar_name (optional).
+    Each event needs at minimum a title and start_iso. id is auto-derived
+    from title|start_iso if not supplied (the iPhone Shortcut can't always
+    expose a stable identifier).
     """
     client = _get_client()
     client.table("mirrored_events").delete().neq("id", "__never__").execute()
     if not events:
         return 0
-    rows = [
-        {
-            "id": e["id"],
-            "title": e.get("title") or "(ללא כותרת)",
-            "start_iso": e.get("start_iso", ""),
+    rows = []
+    for e in events:
+        title = e.get("title") or "(ללא כותרת)"
+        start_iso = e.get("start_iso", "")
+        if not start_iso:
+            continue
+        event_id = e.get("id") or f"{title}|{start_iso}"
+        rows.append({
+            "id": event_id,
+            "title": title,
+            "start_iso": start_iso,
             "end_iso": e.get("end_iso", ""),
             "location": e.get("location", ""),
             "notes": e.get("notes", ""),
             "calendar_name": e.get("calendar_name", ""),
-        }
-        for e in events
-        if e.get("id")
-    ]
+        })
     if rows:
         client.table("mirrored_events").upsert(rows, on_conflict="id").execute()
     return len(rows)
