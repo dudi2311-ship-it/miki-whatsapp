@@ -10,6 +10,7 @@ import logging
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
+import httpx
 from google import genai
 from google.genai import types
 
@@ -233,6 +234,44 @@ def send_gmail(to: str, subject: str, body: str) -> dict:
         return {"error": str(e)}
 
 
+def list_recent_whatsapps(minutes: int = 1440) -> dict:
+    """הודעות ווטסאפ נכנסות אחרונות (Green API LastIncomingMessages).
+
+    שימוש: כשדודי שואל "מי כתב לי", "מה היה בווטסאפ", "תסכם לי הודעות אחרונות".
+    Green API מחזיר רק עד 24 שעות אחורה — אם דודי מבקש ישן יותר, הסבר את המגבלה.
+
+    Args:
+        minutes: כמה דקות אחורה למשוך (ברירת מחדל 1440 = 24 שעות, המקסימום של Green API).
+
+    Returns:
+        dict עם 'messages' (רשימה של {chatId, senderName, textMessage, timestamp}) ו-'count'.
+    """
+    try:
+        url = (
+            f"{settings.GREEN_API_URL}"
+            f"/waInstance{settings.GREEN_API_INSTANCE}"
+            f"/lastIncomingMessages/{settings.GREEN_API_TOKEN}"
+        )
+        with httpx.Client(timeout=30) as client:
+            response = client.get(url, params={"minutes": minutes})
+            response.raise_for_status()
+            raw = response.json()
+        messages = []
+        for m in raw if isinstance(raw, list) else []:
+            if m.get("typeMessage") != "textMessage":
+                continue
+            messages.append({
+                "chatId": m.get("chatId", ""),
+                "senderName": m.get("senderName", ""),
+                "textMessage": m.get("textMessage", ""),
+                "timestamp": m.get("timestamp", 0),
+            })
+        return {"messages": messages, "count": len(messages)}
+    except Exception as e:
+        logger.exception("list_recent_whatsapps failed")
+        return {"error": str(e)}
+
+
 def web_search(query: str) -> dict:
     """Search the live web for current information using Google Search.
 
@@ -284,6 +323,7 @@ _TOOLS = [
     mark_gmail_read,
     label_gmail,
     send_gmail,
+    list_recent_whatsapps,
     web_search,
 ]
 
@@ -304,6 +344,7 @@ def _build_system_prompt() -> str:
 - mark_gmail_read — סימון מייל כנקרא (מסיר את התווית UNREAD)
 - label_gmail — הוספת תווית למייל (יוצרת את התווית אם לא קיימת)
 - send_gmail — שליחת מייל. **רק אחרי אישור מפורש של דודי לכתובת/נושא/תוכן**.
+- list_recent_whatsapps — קריאת הודעות ווטסאפ נכנסות אחרונות (עד 24 שעות, מגבלה של Green API)
 - web_search — חיפוש חי באינטרנט (חדשות, מחירים, שעות פתיחה, מזג אוויר, כל דבר שיכול להשתנות)
 
 כשדודי שואל על היומן/המיילים או מבקש להוסיף/לשנות/למחוק — **קרא לפונקציה המתאימה ישירות** ואז ענה לו עם התוצאה.
