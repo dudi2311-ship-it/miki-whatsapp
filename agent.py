@@ -16,6 +16,7 @@ from google.genai import types
 from config import settings
 from database import get_history, save_message
 import calendar_service
+import gmail_service
 
 logger = logging.getLogger("miki.agent")
 
@@ -135,6 +136,71 @@ def delete_calendar_event(event_id: str) -> dict:
         return {"error": str(e)}
 
 
+def search_gmail(query: str = "", max_results: int = 10) -> dict:
+    """Search the user's Gmail and return short summaries of matching messages.
+
+    Use this whenever the user asks about their email — recent mail, unread,
+    messages from a specific sender, mail about a topic. Don't read full
+    bodies here — call read_gmail_message afterwards if the user wants details.
+
+    Args:
+        query: Gmail search syntax. Examples:
+            '' (empty) — most recent mail
+            'is:unread' — unread only
+            'from:plus.google.com newer_than:7d' — sender + recency
+            'subject:חשבונית' — subject contains text (Hebrew works)
+        max_results: How many to return (default 10, keep small).
+
+    Returns:
+        A dict with 'messages' (list of summaries with id, from, subject,
+        date, snippet, unread) and 'count'.
+    """
+    try:
+        msgs = gmail_service.search_messages(query=query, max_results=max_results)
+        return {"messages": msgs, "count": len(msgs)}
+    except Exception as e:
+        logger.exception("search_gmail failed")
+        return {"error": str(e)}
+
+
+def read_gmail_message(message_id: str) -> dict:
+    """Read the full body of a Gmail message by ID (from search_gmail).
+
+    Args:
+        message_id: The message ID returned by search_gmail.
+
+    Returns:
+        Full message with from, to, subject, date, body (truncated to 8k chars).
+    """
+    try:
+        return gmail_service.get_message(message_id)
+    except Exception as e:
+        logger.exception("read_gmail_message failed")
+        return {"error": str(e)}
+
+
+def send_gmail(to: str, subject: str, body: str) -> dict:
+    """Send a plain-text email from the user's Gmail account.
+
+    Use this only after explicitly confirming with the user — never send mail
+    on a vague request. Confirm recipient, subject, and body content before
+    calling this. Hebrew is fine in any field.
+
+    Args:
+        to: Recipient email address.
+        subject: Email subject line.
+        body: Plain-text body. Use \\n for line breaks.
+
+    Returns:
+        Confirmation with the sent message id.
+    """
+    try:
+        return gmail_service.send_email(to=to, subject=subject, body=body)
+    except Exception as e:
+        logger.exception("send_gmail failed")
+        return {"error": str(e)}
+
+
 def web_search(query: str) -> dict:
     """Search the live web for current information using Google Search.
 
@@ -181,6 +247,9 @@ _TOOLS = [
     create_calendar_event,
     update_calendar_event,
     delete_calendar_event,
+    search_gmail,
+    read_gmail_message,
+    send_gmail,
     web_search,
 ]
 
@@ -196,9 +265,12 @@ def _build_system_prompt() -> str:
 - create_calendar_event — להוספת אירוע חדש
 - update_calendar_event — לשינוי אירוע קיים
 - delete_calendar_event — למחיקת אירוע
+- search_gmail — חיפוש מיילים (היסטוריה, "is:unread", "from:X", "subject:Y")
+- read_gmail_message — קריאת גוף מייל מלא (לפי message_id מ-search_gmail)
+- send_gmail — שליחת מייל. **רק אחרי אישור מפורש של דודי לכתובת/נושא/תוכן**.
 - web_search — חיפוש חי באינטרנט (חדשות, מחירים, שעות פתיחה, מזג אוויר, כל דבר שיכול להשתנות)
 
-כשדודי שואל על היומן או מבקש להוסיף/לשנות/למחוק — **קרא לפונקציה המתאימה ישירות** ואז ענה לו עם התוצאה.
+כשדודי שואל על היומן/המיילים או מבקש להוסיף/לשנות/למחוק — **קרא לפונקציה המתאימה ישירות** ואז ענה לו עם התוצאה.
 כשדודי שואל על משהו שדורש מידע עדכני (מה קרה, מה המחיר, מתי פתוח) — **קרא ל-web_search** במקום לנחש.
 לעולם אל תגיד "אני אוסיף" / "אני אבדוק" בלי לקרוא לפונקציה.
 
