@@ -207,7 +207,10 @@ def _format_morning_brief() -> str:
     weekday_he = ["שני", "שלישי", "רביעי", "חמישי", "שישי", "שבת", "ראשון"][now.weekday()]
     lines = [f"בוקר טוב ☀️ יום {weekday_he}, {now.strftime('%d/%m')}"]
 
-    combined: list[tuple[str, str, str]] = []  # (time, title, source)
+    combined: dict[tuple[str, str], tuple[str, str]] = {}  # key -> (source, display_title)
+
+    def _norm(t: str) -> str:
+        return " ".join(t.lower().split())
 
     try:
         events = calendar_service.list_events(days_ahead=1, include_work=True)
@@ -216,7 +219,8 @@ def _format_morning_brief() -> str:
             if start.startswith(today_ymd):
                 time_str = start[11:16] if len(start) >= 16 else ""
                 source = "💼" if e.get("is_work") else "📅"
-                combined.append((time_str, e.get("title", ""), source))
+                title = e.get("title", "")
+                combined.setdefault((time_str, _norm(title)), (source, title))
     except Exception as e:
         logger.exception("morning brief google calendar failed")
         lines.append(f"\n⚠️ לא הצלחתי למשוך Google Calendar: {e}")
@@ -225,15 +229,18 @@ def _format_morning_brief() -> str:
         for e in list_mirrored_events_today(today_ymd):
             start = e.get("start_iso", "")
             time_str = start[11:16] if len(start) >= 16 else ""
-            combined.append((time_str, e.get("title", ""), "📱"))
+            title = e.get("title", "")
+            combined.setdefault((time_str, _norm(title)), ("📱", title))
     except Exception as e:
         logger.exception("morning brief mirrored events failed")
 
-    combined.sort(key=lambda t: t[0] or "99:99")
     if combined:
+        ordered = sorted(combined.items(), key=lambda kv: kv[0][0] or "99:99")
         lines.append("\n📅 היום ביומן:")
-        for time_str, title, source in combined:
+        for (time_str, _), (source, title) in ordered[:20]:
             lines.append(f"  • {source} {time_str} {title}")
+        if len(ordered) > 20:
+            lines.append(f"  ועוד {len(ordered) - 20} אירועים...")
     else:
         lines.append("\n📅 אין אירועים היום.")
 

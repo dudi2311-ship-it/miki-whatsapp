@@ -29,9 +29,21 @@ $filter      = "[Start] < '$filterEnd' AND [End] > '$filterStart'"
 $todayItems = $items.Restrict($filter)
 
 $events = @()
+$seen   = @{}
 foreach ($item in $todayItems) {
+    # Outlook's Restrict with IncludeRecurrences sometimes leaks events that
+    # don't actually start today — drop anything whose start isn't on today's date.
+    if ($item.Start.Date -ne $startOfDay) { continue }
+    # Skip all-day blocks (holidays, OOO markers) — they're noise in a daily brief.
+    if ($item.AllDayEvent) { continue }
+
+    $title = if ($item.Subject) { $item.Subject } else { "(ללא כותרת)" }
+    $key   = "{0}|{1}" -f $title, $item.Start.ToString("HH:mm")
+    if ($seen.ContainsKey($key)) { continue }
+    $seen[$key] = $true
+
     $events += [ordered]@{
-        title         = if ($item.Subject)  { $item.Subject }  else { "(ללא כותרת)" }
+        title         = $title
         start_iso     = $item.Start.ToString("yyyy-MM-ddTHH:mm:sszzz")
         end_iso       = $item.End.ToString("yyyy-MM-ddTHH:mm:sszzz")
         location      = if ($item.Location) { $item.Location } else { "" }
