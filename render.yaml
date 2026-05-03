@@ -21,3 +21,7 @@ services:
         sync: false
       - key: SUPABASE_KEY
         sync: false
+      - key: MIKI_OWNER_CHAT_ID
+        sync: false
+      - key: CRON_TOKEN
+        sync: false

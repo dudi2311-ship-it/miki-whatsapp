@@ -3,14 +3,20 @@
 import time
 import logging
 from contextlib import asynccontextmanager
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 import httpx
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, Header, HTTPException
 from fastapi.responses import JSONResponse
 
 from config import settings
 from agent import get_response
 from database import init_db
+import calendar_service
+import gmail_service
+
+ISRAEL_TZ = ZoneInfo("Asia/Jerusalem")
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("miki")
@@ -146,6 +152,67 @@ async def send_whatsapp_message(chat_id: str, message: str):
         )
         response.raise_for_status()
         return response.json()
+
+
+def _format_morning_brief() -> str:
+    now = datetime.now(ISRAEL_TZ)
+    weekday_he = ["שני", "שלישי", "רביעי", "חמישי", "שישי", "שבת", "ראשון"][now.weekday()]
+    lines = [f"בוקר טוב ☀️ יום {weekday_he}, {now.strftime('%d/%m')}"]
+
+    try:
+        events = calendar_service.list_events(days_ahead=1, include_work=False)
+        today_events = [
+            e for e in events
+            if e.get("start", "").startswith(now.strftime("%Y-%m-%d"))
+        ]
+        if today_events:
+            lines.append("\n📅 היום ביומן (פרטי):")
+            for e in today_events:
+                start = e.get("start", "")
+                time_str = start[11:16] if len(start) >= 16 else ""
+                lines.append(f"  • {time_str} {e.get('title', '')}")
+        else:
+            lines.append("\n📅 אין אירועים פרטיים ביומן היום.")
+    except Exception as e:
+        logger.exception("morning brief calendar failed")
+        lines.append(f"\n⚠️ לא הצלחתי למשוך יומן: {e}")
+
+    try:
+        unread = gmail_service.search_messages(query="is:unread", max_results=5)
+        if unread:
+            lines.append(f"\n📧 {len(unread)} מיילים שלא נקראו (אחרונים):")
+            for m in unread[:5]:
+                sender = m.get("from", "")[:40]
+                subj = m.get("subject", "")[:50]
+                lines.append(f"  • {sender} — {subj}")
+        else:
+            lines.append("\n📧 תיבת הדואר ריקה מהודעות חדשות.")
+    except Exception as e:
+        logger.exception("morning brief gmail failed")
+        lines.append(f"\n⚠️ לא הצלחתי למשוך מיילים: {e}")
+
+    return "\n".join(lines)
+
+
+@app.post("/cron/morning-brief")
+async def morning_brief(x_cron_token: str = Header(default="")):
+    """Daily morning brief — pushed to the owner via WhatsApp.
+
+    Protected by a shared secret in the X-Cron-Token header. Configure an
+    external scheduler (cron-job.org, Render Cron, etc.) to POST here once a day.
+    """
+    if not settings.CRON_TOKEN or x_cron_token != settings.CRON_TOKEN:
+        raise HTTPException(status_code=401, detail="bad token")
+    if not settings.MIKI_OWNER_CHAT_ID:
+        raise HTTPException(status_code=500, detail="MIKI_OWNER_CHAT_ID not set")
+
+    brief = _format_morning_brief()
+    try:
+        await send_whatsapp_message(settings.MIKI_OWNER_CHAT_ID, brief)
+    except Exception as e:
+        logger.exception("morning brief send failed")
+        return JSONResponse({"error": str(e)}, status_code=500)
+    return {"ok": True, "sent_to": settings.MIKI_OWNER_CHAT_ID, "preview": brief[:300]}
 
 
 if __name__ == "__main__":

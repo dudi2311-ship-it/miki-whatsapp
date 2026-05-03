@@ -53,5 +53,8 @@ class Settings:
     GOOGLE_CLIENT_SECRET: str = os.getenv("GOOGLE_CLIENT_SECRET", "")
     GOOGLE_REFRESH_TOKEN: str = os.getenv("GOOGLE_REFRESH_TOKEN", "")
 
+    MIKI_OWNER_CHAT_ID: str = os.getenv("MIKI_OWNER_CHAT_ID", "")
+    CRON_TOKEN: str = os.getenv("CRON_TOKEN", "")
+
 
 settings = Settings()
