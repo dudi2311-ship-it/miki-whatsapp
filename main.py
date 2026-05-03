@@ -1,9 +1,10 @@
 """מיקי - WhatsApp AI Agent webhook server."""
 
+import re
 import time
 import logging
 from contextlib import asynccontextmanager
-from datetime import datetime
+from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 import httpx
@@ -247,11 +248,12 @@ def _format_morning_brief() -> str:
     try:
         unread = gmail_service.search_messages(query="is:unread", max_results=5)
         if unread:
-            lines.append(f"\n📧 {len(unread)} מיילים שלא נקראו (אחרונים):")
+            lines.append(f"\n📧 {len(unread)} מיילים שלא נקראו:")
             for m in unread[:5]:
-                sender = m.get("from", "")[:40]
-                subj = m.get("subject", "")[:50]
-                lines.append(f"  • {sender} — {subj}")
+                sender = _short_from(m.get("from", ""))
+                subj = m.get("subject", "").strip()[:55]
+                lines.append(f"  • {sender}")
+                lines.append(f"    {subj}")
         else:
             lines.append("\n📧 תיבת הדואר ריקה מהודעות חדשות.")
     except Exception as e:
@@ -259,6 +261,16 @@ def _format_morning_brief() -> str:
         lines.append(f"\n⚠️ לא הצלחתי למשוך מיילים: {e}")
 
     return "\n".join(lines)
+
+
+def _short_from(from_header: str) -> str:
+    """Extract just the display name from an RFC 5322 From header."""
+    if not from_header:
+        return ""
+    m = re.match(r'^\s*"?([^"<]+?)"?\s*<', from_header)
+    if m:
+        return m.group(1).strip()[:35]
+    return from_header.strip()[:35]
 
 
 @app.post("/sync/iphone-events")
@@ -290,6 +302,83 @@ async def sync_iphone_events(request: Request, x_cron_token: str = Header(defaul
         return JSONResponse({"error": str(e)}, status_code=500)
 
     return {"ok": True, "stored": count}
+
+
+@app.post("/cron/check-upcoming")
+async def check_upcoming(x_cron_token: str = Header(default="")):
+    """Send a 10-min-before WhatsApp alert for events starting soon.
+
+    Designed to be hit every 1-2 minutes by an external scheduler. Looks at
+    Google Calendar + iPhone-bridged events and dedupes via agent_state so
+    each event triggers exactly one alert.
+    """
+    if not settings.CRON_TOKEN or x_cron_token != settings.CRON_TOKEN:
+        raise HTTPException(status_code=401, detail="bad token")
+    if not settings.MIKI_OWNER_CHAT_ID:
+        raise HTTPException(status_code=500, detail="MIKI_OWNER_CHAT_ID not set")
+
+    now = datetime.now(ISRAEL_TZ)
+    today_ymd = now.strftime("%Y-%m-%d")
+    window_start = now + timedelta(minutes=9)
+    window_end = now + timedelta(minutes=11)
+
+    candidates: list[dict] = []
+
+    try:
+        events = calendar_service.list_events(days_ahead=1, include_work=True)
+        for e in events:
+            start = e.get("start", "")
+            if not start:
+                continue
+            try:
+                start_dt = datetime.fromisoformat(start)
+            except ValueError:
+                continue
+            if window_start <= start_dt <= window_end:
+                candidates.append({
+                    "id": f"g:{e.get('id')}",
+                    "title": e.get("title", ""),
+                    "start_dt": start_dt,
+                    "location": e.get("location", ""),
+                })
+    except Exception:
+        logger.exception("check-upcoming google calendar failed")
+
+    try:
+        for e in list_mirrored_events_today(today_ymd):
+            start_iso = e.get("start_iso", "")
+            try:
+                start_dt = datetime.fromisoformat(start_iso)
+            except ValueError:
+                continue
+            if window_start <= start_dt <= window_end:
+                candidates.append({
+                    "id": f"o:{e.get('id')}",
+                    "title": e.get("title", ""),
+                    "start_dt": start_dt,
+                    "location": e.get("location", ""),
+                })
+    except Exception:
+        logger.exception("check-upcoming mirrored failed")
+
+    sent = 0
+    for c in candidates:
+        alert_key = f"alerted:{today_ymd}:{c['id']}"
+        if get_state(alert_key):
+            continue
+        time_str = c["start_dt"].strftime("%H:%M")
+        title = c.get("title", "(ללא כותרת)")
+        location = c.get("location", "")
+        loc_line = f"\n📍 {location}" if location else ""
+        msg = f"⏰ עוד 10 דקות:\n*{title}*\n🕐 {time_str}{loc_line}"
+        try:
+            await send_whatsapp_message(settings.MIKI_OWNER_CHAT_ID, msg)
+            set_state(alert_key, "1")
+            sent += 1
+        except Exception:
+            logger.exception("check-upcoming send failed")
+
+    return {"ok": True, "alerts_sent": sent, "candidates": len(candidates)}
 
 
 @app.post("/cron/check-mail")
