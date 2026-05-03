@@ -135,11 +135,53 @@ def delete_calendar_event(event_id: str) -> dict:
         return {"error": str(e)}
 
 
+def web_search(query: str) -> dict:
+    """Search the live web for current information using Google Search.
+
+    Use this whenever the user asks about current events, recent news, prices,
+    sports results, opening hours, weather forecasts, or any fact that may have
+    changed since training. Don't use it for personal data — that's what the
+    calendar tools are for.
+
+    Args:
+        query: The search query, in the user's language (Hebrew is fine).
+
+    Returns:
+        A dict with 'answer' (a synthesized answer) and 'sources' (URLs used).
+    """
+    try:
+        response = _client.models.generate_content(
+            model=settings.GEMINI_MODEL,
+            contents=query,
+            config=types.GenerateContentConfig(
+                tools=[types.Tool(google_search=types.GoogleSearch())],
+                temperature=0.3,
+                max_output_tokens=1500,
+            ),
+        )
+        answer = _extract_text(response) or getattr(response, "text", "") or ""
+        sources: list[str] = []
+        try:
+            grounding = response.candidates[0].grounding_metadata
+            chunks = getattr(grounding, "grounding_chunks", None) or []
+            for c in chunks:
+                web = getattr(c, "web", None)
+                if web and getattr(web, "uri", None):
+                    sources.append(web.uri)
+        except (AttributeError, IndexError):
+            pass
+        return {"answer": answer.strip(), "sources": sources[:5]}
+    except Exception as e:
+        logger.exception("web_search failed")
+        return {"error": str(e)}
+
+
 _TOOLS = [
     list_my_events,
     create_calendar_event,
     update_calendar_event,
     delete_calendar_event,
+    web_search,
 ]
 
 
@@ -149,14 +191,16 @@ def _build_system_prompt() -> str:
     weekday_he = ["שני", "שלישי", "רביעי", "חמישי", "שישי", "שבת", "ראשון"][now.weekday()]
     return f"""{settings.SYSTEM_PROMPT}
 
-יש לך גישה לכלים אמיתיים ליומן Google Calendar של דודי. **חובה** להשתמש בהם — לא לדמיין או להמציא תשובות:
-- list_my_events — לקריאת אירועים
+יש לך גישה לכלים אמיתיים. **חובה** להשתמש בהם — לא לדמיין או להמציא תשובות:
+- list_my_events — לקריאת אירועים מהיומן
 - create_calendar_event — להוספת אירוע חדש
 - update_calendar_event — לשינוי אירוע קיים
 - delete_calendar_event — למחיקת אירוע
+- web_search — חיפוש חי באינטרנט (חדשות, מחירים, שעות פתיחה, מזג אוויר, כל דבר שיכול להשתנות)
 
 כשדודי שואל על היומן או מבקש להוסיף/לשנות/למחוק — **קרא לפונקציה המתאימה ישירות** ואז ענה לו עם התוצאה.
-לעולם אל תגיד "אני אוסיף" / "אני אבדוק" בלי לקרוא לפונקציה. אם אתה צריך מידע מהיומן — קרא לפונקציה.
+כשדודי שואל על משהו שדורש מידע עדכני (מה קרה, מה המחיר, מתי פתוח) — **קרא ל-web_search** במקום לנחש.
+לעולם אל תגיד "אני אוסיף" / "אני אבדוק" בלי לקרוא לפונקציה.
 
 פגישות עבודה (משרד הבריאות, Teams, ועוד) מסוננות אוטומטית. אם דודי שואל על "פגישות" סתם — include_work=False (ברירת מחדל). רק אם הוא אומר במפורש "כולל עבודה" — include_work=True.
 
