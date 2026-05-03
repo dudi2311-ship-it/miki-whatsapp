@@ -58,6 +58,24 @@ async def health():
     return {"status": "ok", "agent": "miki"}
 
 
+@app.get("/debug/trigger-error")
+async def debug_trigger_error(token: str = ""):
+    """Manually trigger a fake error to verify owner-alert plumbing.
+
+    Hit GET /debug/trigger-error?token=<CRON_TOKEN> — owner should get a
+    🚨 WhatsApp alert. Remove this endpoint once monitoring is confirmed.
+    """
+    if not settings.CRON_TOKEN or token != settings.CRON_TOKEN:
+        raise HTTPException(status_code=401, detail="bad token")
+    try:
+        raise RuntimeError("בדיקת ניטור ידנית — מתפוצץ בכוונה")
+    except Exception as e:
+        debug_text = await notify_owner_error(
+            "debug/trigger-error", e, sender_name="בדיקה ידנית"
+        )
+    return {"ok": True, "alert_text": debug_text}
+
+
 @app.post("/webhook/test")
 async def webhook_test(request: Request):
     """Dry-run version of the webhook — runs the agent but never sends via Green API.
@@ -128,18 +146,26 @@ async def webhook(request: Request):
 
     phone = chat_id.replace("@c.us", "")
     logger.info(f"Message from {sender_name} ({phone}): {text[:80]}")
+    is_owner = chat_id == settings.MIKI_OWNER_CHAT_ID
 
     try:
         reply = get_response(phone, text, sender_name)
     except Exception as e:
         logger.exception(f"Agent error: {e}")
-        reply = "סליחה, משהו השתבש. נסה שוב בעוד רגע."
+        debug_text = await notify_owner_error(
+            "webhook/agent", e, sender_name, phone, text
+        )
+        reply = debug_text if is_owner else "סליחה, משהו השתבש. נסה שוב בעוד רגע."
 
     try:
         await send_whatsapp_message(chat_id, reply)
         logger.info(f"Reply sent to {phone}: {reply[:80]}")
     except Exception as e:
         logger.exception(f"Failed to send reply: {e}")
+        if not is_owner:
+            await notify_owner_error(
+                "webhook/send", e, sender_name, phone, text
+            )
 
     return {"ok": True}
 
@@ -158,6 +184,39 @@ async def send_whatsapp_message(chat_id: str, message: str):
         )
         response.raise_for_status()
         return response.json()
+
+
+async def notify_owner_error(
+    where: str,
+    exc: BaseException,
+    sender_name: str = "",
+    phone: str = "",
+    user_text: str = "",
+) -> str:
+    """Push a debug message to the owner's WhatsApp on errors. Never raises."""
+    lines = [
+        "🚨 שגיאה במיקי",
+        f"מקום: {where}",
+        f"סוג: {type(exc).__name__}",
+        f"הודעה: {str(exc)[:200]}",
+    ]
+    if sender_name or phone:
+        who = sender_name or "?"
+        if phone:
+            who += f" ({phone})"
+        snippet = user_text.strip().replace("\n", " ")[:80]
+        if snippet:
+            who += f' — "{snippet}"'
+        lines.append(f"ממי: {who}")
+    debug_text = "\n".join(lines)
+
+    if not settings.MIKI_OWNER_CHAT_ID:
+        return debug_text
+    try:
+        await send_whatsapp_message(settings.MIKI_OWNER_CHAT_ID, debug_text)
+    except Exception:
+        logger.exception("notify_owner_error failed to deliver alert")
+    return debug_text
 
 
 def _format_morning_brief() -> str:
@@ -275,6 +334,7 @@ async def check_mail(x_cron_token: str = Header(default="")):
         )
     except Exception as e:
         logger.exception("check-mail search failed")
+        await notify_owner_error("cron/check-mail (gmail search)", e)
         return JSONResponse({"error": str(e)}, status_code=500)
 
     set_state("last_mail_check_unix", str(now_unix))
@@ -293,6 +353,7 @@ async def check_mail(x_cron_token: str = Header(default="")):
         await send_whatsapp_message(settings.MIKI_OWNER_CHAT_ID, text)
     except Exception as e:
         logger.exception("check-mail send failed")
+        await notify_owner_error("cron/check-mail (send)", e)
         return JSONResponse({"error": str(e)}, status_code=500)
 
     return {"ok": True, "new_mail": len(msgs), "preview": text[:300]}
@@ -315,6 +376,7 @@ async def morning_brief(x_cron_token: str = Header(default="")):
         await send_whatsapp_message(settings.MIKI_OWNER_CHAT_ID, brief)
     except Exception as e:
         logger.exception("morning brief send failed")
+        await notify_owner_error("cron/morning-brief (send)", e)
         return JSONResponse({"error": str(e)}, status_code=500)
     return {"ok": True, "sent_to": settings.MIKI_OWNER_CHAT_ID, "preview": brief[:300]}
 
