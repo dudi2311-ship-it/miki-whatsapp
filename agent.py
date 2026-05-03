@@ -178,6 +178,39 @@ def read_gmail_message(message_id: str) -> dict:
         return {"error": str(e)}
 
 
+def mark_gmail_read(message_id: str) -> dict:
+    """Mark a Gmail message as read (removes the UNREAD label).
+
+    Use when the user asks to mark a specific message as read, or after they
+    confirm they've handled an unread item.
+
+    Args:
+        message_id: The message ID returned by search_gmail.
+    """
+    try:
+        return gmail_service.mark_as_read(message_id)
+    except Exception as e:
+        logger.exception("mark_gmail_read failed")
+        return {"error": str(e)}
+
+
+def label_gmail(message_id: str, label_name: str) -> dict:
+    """Add a label to a Gmail message. Creates the label if it doesn't exist.
+
+    Use when the user asks to tag/categorize a message (e.g. "תייג כ'חשבונות'",
+    'put this in the Receipts label'). Hebrew label names are fine.
+
+    Args:
+        message_id: The message ID returned by search_gmail.
+        label_name: The label name to add (created automatically if missing).
+    """
+    try:
+        return gmail_service.add_label(message_id, label_name)
+    except Exception as e:
+        logger.exception("label_gmail failed")
+        return {"error": str(e)}
+
+
 def send_gmail(to: str, subject: str, body: str) -> dict:
     """Send a plain-text email from the user's Gmail account.
 
@@ -248,6 +281,8 @@ _TOOLS = [
     delete_calendar_event,
     search_gmail,
     read_gmail_message,
+    mark_gmail_read,
+    label_gmail,
     send_gmail,
     web_search,
 ]
@@ -266,6 +301,8 @@ def _build_system_prompt() -> str:
 - delete_calendar_event — למחיקת אירוע
 - search_gmail — חיפוש מיילים (היסטוריה, "is:unread", "from:X", "subject:Y")
 - read_gmail_message — קריאת גוף מייל מלא (לפי message_id מ-search_gmail)
+- mark_gmail_read — סימון מייל כנקרא (מסיר את התווית UNREAD)
+- label_gmail — הוספת תווית למייל (יוצרת את התווית אם לא קיימת)
 - send_gmail — שליחת מייל. **רק אחרי אישור מפורש של דודי לכתובת/נושא/תוכן**.
 - web_search — חיפוש חי באינטרנט (חדשות, מחירים, שעות פתיחה, מזג אוויר, כל דבר שיכול להשתנות)
 

@@ -138,6 +138,57 @@ def get_message(message_id: str) -> dict:
     }
 
 
+def mark_as_read(message_id: str) -> dict:
+    """Remove the UNREAD label from a message."""
+    service = _get_service()
+    service.users().messages().modify(
+        userId="me",
+        id=message_id,
+        body={"removeLabelIds": ["UNREAD"]},
+    ).execute()
+    return {"marked_read": True, "id": message_id}
+
+
+def mark_as_unread(message_id: str) -> dict:
+    """Add the UNREAD label back to a message."""
+    service = _get_service()
+    service.users().messages().modify(
+        userId="me",
+        id=message_id,
+        body={"addLabelIds": ["UNREAD"]},
+    ).execute()
+    return {"marked_unread": True, "id": message_id}
+
+
+def _find_or_create_label(service, label_name: str) -> str:
+    """Return label_id for a user label, creating it if missing."""
+    existing = service.users().labels().list(userId="me").execute().get("labels", [])
+    for lbl in existing:
+        if lbl.get("name", "").lower() == label_name.lower():
+            return lbl["id"]
+    created = service.users().labels().create(
+        userId="me",
+        body={
+            "name": label_name,
+            "labelListVisibility": "labelShow",
+            "messageListVisibility": "show",
+        },
+    ).execute()
+    return created["id"]
+
+
+def add_label(message_id: str, label_name: str) -> dict:
+    """Add a user label (by name) to a message. Creates the label if it doesn't exist."""
+    service = _get_service()
+    label_id = _find_or_create_label(service, label_name)
+    service.users().messages().modify(
+        userId="me",
+        id=message_id,
+        body={"addLabelIds": [label_id]},
+    ).execute()
+    return {"labeled": True, "id": message_id, "label": label_name}
+
+
 def send_email(to: str, subject: str, body: str) -> dict:
     """Send a plain-text email from the authorized account."""
     service = _get_service()
