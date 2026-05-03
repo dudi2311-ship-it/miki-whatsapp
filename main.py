@@ -19,6 +19,8 @@ from database import (
     set_state,
     replace_mirrored_events,
     list_mirrored_events_today,
+    list_due_reminders,
+    mark_reminder_fired,
 )
 import calendar_service
 import gmail_service
@@ -379,6 +381,35 @@ async def check_upcoming(x_cron_token: str = Header(default="")):
             logger.exception("check-upcoming send failed")
 
     return {"ok": True, "alerts_sent": sent, "candidates": len(candidates)}
+
+
+@app.post("/cron/check-reminders")
+async def check_reminders(x_cron_token: str = Header(default="")):
+    """Fire any pending reminders whose fire_at is at or before now.
+
+    Designed to be hit every 1 minute by an external scheduler.
+    """
+    if not settings.CRON_TOKEN or x_cron_token != settings.CRON_TOKEN:
+        raise HTTPException(status_code=401, detail="bad token")
+
+    now_iso = datetime.now(ISRAEL_TZ).isoformat()
+    try:
+        due = list_due_reminders(now_iso)
+    except Exception as e:
+        logger.exception("check-reminders fetch failed")
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+    sent = 0
+    for r in due:
+        msg = f"⏰ תזכורת:\n{r.get('text', '')}"
+        try:
+            await send_whatsapp_message(r["chat_id"], msg)
+            mark_reminder_fired(r["id"])
+            sent += 1
+        except Exception:
+            logger.exception(f"reminder send failed for {r.get('id')}")
+
+    return {"ok": True, "fired": sent, "due": len(due)}
 
 
 @app.post("/cron/check-mail")

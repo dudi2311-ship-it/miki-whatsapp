@@ -272,6 +272,66 @@ def list_recent_whatsapps(minutes: int = 1440) -> dict:
         return {"error": str(e)}
 
 
+def set_reminder(text: str, fire_at_iso: str) -> dict:
+    """תזמן תזכורת ב-WhatsApp לזמן עתידי.
+
+    שימוש: כשדודי אומר "תזכיר לי X בשעה Y" / "בעוד שעה תזכיר לי..." / "מחר ב-9 תזכיר לי...".
+    חובה להמיר זמן יחסי לזמן מוחלט בעזרת השעה הנוכחית מה-system prompt לפני הקריאה.
+
+    Args:
+        text: תוכן התזכורת בלשון ציווי קצרה (למשל "להתקשר לאמא").
+        fire_at_iso: זמן הירי בפורמט ISO 8601 עם אזור זמן ישראל,
+            למשל '2026-05-04T18:00:00+03:00'.
+
+    Returns:
+        dict עם id ו-fire_at של התזכורת שנוצרה, או 'error'.
+    """
+    try:
+        from database import create_reminder as _create
+        result = _create(settings.MIKI_OWNER_CHAT_ID, text, fire_at_iso)
+        return {
+            "created": True,
+            "id": str(result.get("id", "")),
+            "fire_at": fire_at_iso,
+            "text": text,
+        }
+    except Exception as e:
+        logger.exception("set_reminder failed")
+        return {"error": str(e)}
+
+
+def list_reminders() -> dict:
+    """החזר את התזכורות הקרובות שעוד לא ירו.
+
+    שימוש: כשדודי שואל "אילו תזכורות יש לי", "תזכיר לי מה תזמנתי".
+
+    Returns:
+        dict עם 'reminders' (רשימת תזכורות פעילות עם id, text, fire_at).
+    """
+    try:
+        from database import list_pending_reminders
+        rows = list_pending_reminders(settings.MIKI_OWNER_CHAT_ID, limit=20)
+        return {"reminders": rows, "count": len(rows)}
+    except Exception as e:
+        logger.exception("list_reminders failed")
+        return {"error": str(e)}
+
+
+def cancel_reminder_by_id(reminder_id: str) -> dict:
+    """בטל תזכורת לפי ה-id שלה (מ-list_reminders).
+
+    שימוש: כשדודי אומר "בטל את התזכורת על X" — קודם list_reminders,
+    מוצא את ה-id המתאים, ואז קורא לפונקציה הזאת.
+    """
+    try:
+        from database import cancel_reminder as _cancel
+        _cancel(reminder_id)
+        return {"cancelled": True, "id": reminder_id}
+    except Exception as e:
+        logger.exception("cancel_reminder_by_id failed")
+        return {"error": str(e)}
+
+
 def web_search(query: str) -> dict:
     """Search the live web for current information using Google Search.
 
@@ -324,6 +384,9 @@ _TOOLS = [
     label_gmail,
     send_gmail,
     list_recent_whatsapps,
+    set_reminder,
+    list_reminders,
+    cancel_reminder_by_id,
     web_search,
 ]
 
@@ -345,6 +408,9 @@ def _build_system_prompt() -> str:
 - label_gmail — הוספת תווית למייל (יוצרת את התווית אם לא קיימת)
 - send_gmail — שליחת מייל. **רק אחרי אישור מפורש של דודי לכתובת/נושא/תוכן**.
 - list_recent_whatsapps — קריאת הודעות ווטסאפ נכנסות אחרונות (עד 24 שעות, מגבלה של Green API)
+- set_reminder — תזמון תזכורת WhatsApp עתידית. **המר זמן יחסי לזמן מוחלט** (ISO 8601 עם +03:00) לפני הקריאה.
+- list_reminders — הצגת תזכורות קרובות שטרם ירו
+- cancel_reminder_by_id — ביטול תזכורת לפי id
 - web_search — חיפוש חי באינטרנט (חדשות, מחירים, שעות פתיחה, מזג אוויר, כל דבר שיכול להשתנות)
 
 כשדודי שואל על היומן/המיילים או מבקש להוסיף/לשנות/למחוק — **קרא לפונקציה המתאימה ישירות** ואז ענה לו עם התוצאה.

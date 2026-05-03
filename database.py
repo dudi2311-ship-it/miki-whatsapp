@@ -121,3 +121,56 @@ def list_mirrored_events_today(today_yyyy_mm_dd: str) -> list[dict]:
         .execute()
     )
     return response.data or []
+
+
+def create_reminder(chat_id: str, text: str, fire_at_iso: str) -> dict:
+    """Insert a pending reminder. Returns the new row."""
+    response = (
+        _get_client()
+        .table("reminders")
+        .insert({"chat_id": chat_id, "text": text, "fire_at": fire_at_iso})
+        .execute()
+    )
+    rows = response.data or []
+    return rows[0] if rows else {}
+
+
+def list_due_reminders(now_iso: str) -> list[dict]:
+    """Return unfired reminders whose fire_at is at or before now."""
+    response = (
+        _get_client()
+        .table("reminders")
+        .select("*")
+        .eq("fired", False)
+        .lte("fire_at", now_iso)
+        .order("fire_at")
+        .execute()
+    )
+    return response.data or []
+
+
+def list_pending_reminders(chat_id: str, limit: int = 20) -> list[dict]:
+    """Return upcoming unfired reminders for a chat, soonest first."""
+    response = (
+        _get_client()
+        .table("reminders")
+        .select("*")
+        .eq("chat_id", chat_id)
+        .eq("fired", False)
+        .order("fire_at")
+        .limit(limit)
+        .execute()
+    )
+    return response.data or []
+
+
+def mark_reminder_fired(reminder_id: str) -> None:
+    """Mark a single reminder as already delivered."""
+    _get_client().table("reminders").update({"fired": True}).eq(
+        "id", reminder_id
+    ).execute()
+
+
+def cancel_reminder(reminder_id: str) -> None:
+    """Hard-delete a reminder by id."""
+    _get_client().table("reminders").delete().eq("id", reminder_id).execute()
