@@ -234,26 +234,83 @@ def send_gmail(to: str, subject: str, body: str) -> dict:
         return {"error": str(e)}
 
 
+def _green_api_url(method: str) -> str:
+    return (
+        f"{settings.GREEN_API_URL}"
+        f"/waInstance{settings.GREEN_API_INSTANCE}"
+        f"/{method}/{settings.GREEN_API_TOKEN}"
+    )
+
+
+def _normalize_chat_id(value: str) -> str:
+    """קבל chatId מלא או מספר טלפון, החזר chatId תקין ל-Green API.
+
+    דוגמאות: '972501234567' → '972501234567@c.us', '12345@g.us' → '12345@g.us'.
+    """
+    v = (value or "").strip()
+    if "@" in v:
+        return v
+    digits = "".join(c for c in v if c.isdigit())
+    return f"{digits}@c.us" if digits else v
+
+
 def list_recent_whatsapps(minutes: int = 1440) -> dict:
     """הודעות ווטסאפ נכנסות אחרונות (Green API LastIncomingMessages).
 
-    שימוש: כשדודי שואל "מי כתב לי", "מה היה בווטסאפ", "תסכם לי הודעות אחרונות".
-    Green API מחזיר רק עד 24 שעות אחורה — אם דודי מבקש ישן יותר, הסבר את המגבלה.
+    כולל גם הודעות מקבוצות. is_group=True מסמן הודעה מקבוצה (chatId שמסתיים ב-@g.us);
+    במקרה כזה chatName הוא שם הקבוצה ו-senderName הוא מי שכתב בתוכה.
+    Green API מחזיר עד 24 שעות אחורה.
 
     Args:
-        minutes: כמה דקות אחורה למשוך (ברירת מחדל 1440 = 24 שעות, המקסימום של Green API).
+        minutes: כמה דקות אחורה למשוך (ברירת מחדל 1440 = 24 שעות).
 
     Returns:
-        dict עם 'messages' (רשימה של {chatId, senderName, textMessage, timestamp}) ו-'count'.
+        dict עם 'messages' (רשימה של {chatId, chatName, senderName, textMessage, timestamp, is_group}) ו-'count'.
     """
     try:
-        url = (
-            f"{settings.GREEN_API_URL}"
-            f"/waInstance{settings.GREEN_API_INSTANCE}"
-            f"/lastIncomingMessages/{settings.GREEN_API_TOKEN}"
-        )
         with httpx.Client(timeout=30) as client:
-            response = client.get(url, params={"minutes": minutes})
+            response = client.get(_green_api_url("lastIncomingMessages"), params={"minutes": minutes})
+            response.raise_for_status()
+            raw = response.json()
+        messages = []
+        for m in raw if isinstance(raw, list) else []:
+            if m.get("typeMessage") != "textMessage":
+                continue
+            chat_id = m.get("chatId", "")
+            messages.append({
+                "chatId": chat_id,
+                "chatName": m.get("chatName", ""),
+                "senderName": m.get("senderName", ""),
+                "textMessage": m.get("textMessage", ""),
+                "timestamp": m.get("timestamp", 0),
+                "is_group": chat_id.endswith("@g.us"),
+            })
+        return {"messages": messages, "count": len(messages)}
+    except Exception as e:
+        logger.exception("list_recent_whatsapps failed")
+        return {"error": str(e)}
+
+
+def read_whatsapp_chat(chat_id: str, count: int = 20) -> dict:
+    """קרא הודעות אחרונות מצ'אט ווטסאפ ספציפי (Green API getChatHistory).
+
+    שימוש: "מה היה עם ליאור היום", "סכם את הקבוצה X". עובד גם על קבוצות.
+    אם אין chat_id ביד — קודם find_whatsapp_chats לפי שם, ואז קרא לכאן.
+
+    Args:
+        chat_id: chatId מלא ('972501234567@c.us' או '...@g.us') או רק מספר טלפון.
+        count: כמה הודעות אחרונות לשלוף (ברירת מחדל 20, מקסימום 100).
+
+    Returns:
+        dict עם 'messages' (טקסט בלבד, מהחדש לישן) ו-'chat_id', 'is_group'.
+    """
+    try:
+        normalized = _normalize_chat_id(chat_id)
+        with httpx.Client(timeout=30) as client:
+            response = client.post(
+                _green_api_url("getChatHistory"),
+                json={"chatId": normalized, "count": min(count, 100)},
+            )
             response.raise_for_status()
             raw = response.json()
         messages = []
@@ -261,14 +318,82 @@ def list_recent_whatsapps(minutes: int = 1440) -> dict:
             if m.get("typeMessage") != "textMessage":
                 continue
             messages.append({
-                "chatId": m.get("chatId", ""),
+                "type": m.get("type", ""),
                 "senderName": m.get("senderName", ""),
                 "textMessage": m.get("textMessage", ""),
                 "timestamp": m.get("timestamp", 0),
             })
-        return {"messages": messages, "count": len(messages)}
+        return {
+            "chat_id": normalized,
+            "is_group": normalized.endswith("@g.us"),
+            "messages": messages,
+            "count": len(messages),
+        }
     except Exception as e:
-        logger.exception("list_recent_whatsapps failed")
+        logger.exception("read_whatsapp_chat failed")
+        return {"error": str(e)}
+
+
+def find_whatsapp_chats(query: str) -> dict:
+    """חפש איש קשר או צ'אט בווטסאפ לפי שם חלקי (Green API getContacts).
+
+    שימוש: דודי אומר "שלח לליאור..." ואין chatId — קרא לזה עם query="ליאור",
+    קבל את ה-chatId, ואז send_whatsapp_to. אם יש כמה תוצאות — תאשר עם דודי לפני שליחה.
+
+    Args:
+        query: מחרוזת חיפוש (חלקית, רישיות לא מבדילה). דוגמאות: 'ליאור', 'אמא', 'משפחה'.
+
+    Returns:
+        dict עם 'matches' (רשימת {id, name, type}) ו-'count'.
+    """
+    try:
+        with httpx.Client(timeout=30) as client:
+            response = client.get(_green_api_url("getContacts"))
+            response.raise_for_status()
+            raw = response.json()
+        q = (query or "").strip().lower()
+        matches = []
+        for c in raw if isinstance(raw, list) else []:
+            name = (c.get("name") or "").lower()
+            cid = (c.get("id") or "").lower()
+            if not q or q in name or q in cid:
+                matches.append({
+                    "id": c.get("id", ""),
+                    "name": c.get("name", ""),
+                    "type": c.get("type", ""),
+                })
+        return {"matches": matches[:20], "count": len(matches)}
+    except Exception as e:
+        logger.exception("find_whatsapp_chats failed")
+        return {"error": str(e)}
+
+
+def send_whatsapp_to(chat_id: str, message: str) -> dict:
+    """שלח הודעת ווטסאפ למישהו אחר (לא חזרה לדודי).
+
+    **חובה אישור מפורש מדודי לפני קריאה** — נמען + תוכן ההודעה.
+    אל תשתמש בזה כדי לענות לדודי עצמו (זה קורה אוטומטית בלולאת ה-webhook).
+    אם יש ספק לגבי chatId — find_whatsapp_chats קודם.
+
+    Args:
+        chat_id: chatId מלא ('...@c.us' / '...@g.us') או מספר טלפון.
+        message: תוכן ההודעה.
+
+    Returns:
+        dict עם 'sent': True ו-'idMessage', או 'error'.
+    """
+    try:
+        normalized = _normalize_chat_id(chat_id)
+        with httpx.Client(timeout=30) as client:
+            response = client.post(
+                _green_api_url("sendMessage"),
+                json={"chatId": normalized, "message": message},
+            )
+            response.raise_for_status()
+            data = response.json()
+        return {"sent": True, "chat_id": normalized, "idMessage": data.get("idMessage", "")}
+    except Exception as e:
+        logger.exception("send_whatsapp_to failed")
         return {"error": str(e)}
 
 
@@ -384,6 +509,9 @@ _TOOLS = [
     label_gmail,
     send_gmail,
     list_recent_whatsapps,
+    read_whatsapp_chat,
+    find_whatsapp_chats,
+    send_whatsapp_to,
     set_reminder,
     list_reminders,
     cancel_reminder_by_id,
@@ -407,7 +535,10 @@ def _build_system_prompt() -> str:
 - mark_gmail_read — סימון מייל כנקרא (מסיר את התווית UNREAD)
 - label_gmail — הוספת תווית למייל (יוצרת את התווית אם לא קיימת)
 - send_gmail — שליחת מייל. **רק אחרי אישור מפורש של דודי לכתובת/נושא/תוכן**.
-- list_recent_whatsapps — קריאת הודעות ווטסאפ נכנסות אחרונות (עד 24 שעות, מגבלה של Green API)
+- list_recent_whatsapps — הודעות ווטסאפ נכנסות אחרונות (עד 24 שעות), כולל קבוצות
+- read_whatsapp_chat — קריאת היסטוריית צ'אט/קבוצה ספציפיים לפי chat_id
+- find_whatsapp_chats — חיפוש איש קשר/קבוצה לפי שם (לקבל chat_id)
+- send_whatsapp_to — שליחת ווטסאפ לאדם/קבוצה. **רק אחרי אישור מפורש של דודי לנמען ולתוכן**.
 - set_reminder — תזמון תזכורת WhatsApp עתידית. **המר זמן יחסי לזמן מוחלט** (ISO 8601 עם +03:00) לפני הקריאה.
 - list_reminders — הצגת תזכורות קרובות שטרם ירו
 - cancel_reminder_by_id — ביטול תזכורת לפי id
