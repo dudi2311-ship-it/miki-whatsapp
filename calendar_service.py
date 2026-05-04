@@ -73,6 +73,14 @@ def _format_event(event: dict) -> dict:
     end = event.get("end", {})
     start_str = start.get("dateTime") or start.get("date") or ""
     end_str = end.get("dateTime") or end.get("date") or ""
+    attendees = [
+        {
+            "email": a.get("email", ""),
+            "name": a.get("displayName", "") or "",
+            "response": a.get("responseStatus", "") or "",
+        }
+        for a in event.get("attendees", []) or []
+    ]
     return {
         "id": event.get("id"),
         "title": event.get("summary") or "(ללא כותרת)",
@@ -80,6 +88,7 @@ def _format_event(event: dict) -> dict:
         "end": end_str,
         "location": event.get("location") or "",
         "description": (event.get("description") or "")[:200],
+        "attendees": attendees,
         "is_work": _is_work_event(event),
     }
 
@@ -121,11 +130,13 @@ def create_event(
     duration_minutes: int = 60,
     description: str = "",
     location: str = "",
+    attendees: list[str] | None = None,
 ) -> dict:
     """Create a new calendar event.
 
     start_iso must be ISO 8601 (e.g., '2026-04-30T10:00:00+03:00').
     If end_iso is None, end = start + duration_minutes.
+    attendees is a list of email addresses to invite.
     """
     if end_iso is None:
         start_dt = datetime.fromisoformat(start_iso)
@@ -141,8 +152,15 @@ def create_event(
         body["description"] = description
     if location:
         body["location"] = location
+    if attendees:
+        body["attendees"] = [{"email": e} for e in attendees if e]
 
-    created = _get_service().events().insert(calendarId="primary", body=body).execute()
+    created = (
+        _get_service()
+        .events()
+        .insert(calendarId="primary", body=body, sendUpdates="all")
+        .execute()
+    )
     return _format_event(created)
 
 
@@ -153,8 +171,17 @@ def update_event(
     end_iso: str | None = None,
     description: str | None = None,
     location: str | None = None,
+    add_attendees: list[str] | None = None,
+    remove_attendees: list[str] | None = None,
+    replace_attendees: list[str] | None = None,
 ) -> dict:
-    """Update an existing event. Only the provided fields are changed."""
+    """Update an existing event. Only the provided fields are changed.
+
+    Attendee semantics:
+    - replace_attendees: full replacement of the attendee list.
+    - add_attendees / remove_attendees: incremental, applied on top of current.
+    Use replace_attendees OR the add/remove pair, not both.
+    """
     service = _get_service()
     event = service.events().get(calendarId="primary", eventId=event_id).execute()
 
@@ -169,9 +196,27 @@ def update_event(
     if location is not None:
         event["location"] = location
 
-    updated = service.events().update(
-        calendarId="primary", eventId=event_id, body=event
-    ).execute()
+    if replace_attendees is not None:
+        event["attendees"] = [{"email": e} for e in replace_attendees if e]
+    else:
+        current = list(event.get("attendees", []) or [])
+        if remove_attendees:
+            drop = {e.lower() for e in remove_attendees if e}
+            current = [a for a in current if (a.get("email") or "").lower() not in drop]
+        if add_attendees:
+            existing_emails = {(a.get("email") or "").lower() for a in current}
+            for email in add_attendees:
+                if email and email.lower() not in existing_emails:
+                    current.append({"email": email})
+                    existing_emails.add(email.lower())
+        if remove_attendees or add_attendees:
+            event["attendees"] = current
+
+    updated = (
+        service.events()
+        .update(calendarId="primary", eventId=event_id, body=event, sendUpdates="all")
+        .execute()
+    )
     return _format_event(updated)
 
 
