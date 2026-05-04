@@ -844,16 +844,31 @@ def _build_system_prompt() -> str:
 """
 
 
-def _to_gemini_contents(history: list[dict], new_user_message: str) -> list[types.Content]:
+def _to_gemini_contents(
+    history: list[dict],
+    new_user_message: str,
+    media_bytes: bytes | None = None,
+    media_mime: str | None = None,
+) -> list[types.Content]:
     contents: list[types.Content] = []
     for msg in history:
         role = "user" if msg["role"] == "user" else "model"
         contents.append(
             types.Content(role=role, parts=[types.Part.from_text(text=msg["content"])])
         )
-    contents.append(
-        types.Content(role="user", parts=[types.Part.from_text(text=new_user_message)])
-    )
+
+    user_parts: list[types.Part] = []
+    if new_user_message:
+        user_parts.append(types.Part.from_text(text=new_user_message))
+    if media_bytes and media_mime:
+        try:
+            user_parts.append(types.Part.from_bytes(data=media_bytes, mime_type=media_mime))
+        except Exception:
+            logger.exception(f"failed to attach media (mime={media_mime})")
+    if not user_parts:
+        user_parts.append(types.Part.from_text(text="(הודעה ריקה)"))
+
+    contents.append(types.Content(role="user", parts=user_parts))
     return contents
 
 
@@ -959,9 +974,14 @@ def _extract_and_save_facts(message: str) -> int:
     return saved
 
 
-def _run_gemini(phone: str, message: str) -> tuple[object, int]:
+def _run_gemini(
+    phone: str,
+    message: str,
+    media_bytes: bytes | None = None,
+    media_mime: str | None = None,
+) -> tuple[object, int]:
     pre_saved = 0
-    if _looks_like_remember_intent(message):
+    if not media_bytes and _looks_like_remember_intent(message):
         try:
             pre_saved = _extract_and_save_facts(message)
             logger.info(f"Pre-saved {pre_saved} facts from remember intent")
@@ -969,7 +989,7 @@ def _run_gemini(phone: str, message: str) -> tuple[object, int]:
             logger.exception("pre-save facts pipeline failed")
 
     history = get_history(phone, limit=settings.MAX_HISTORY)
-    contents = _to_gemini_contents(history, message)
+    contents = _to_gemini_contents(history, message, media_bytes, media_mime)
 
     config = types.GenerateContentConfig(
         system_instruction=_build_system_prompt(),
@@ -1016,8 +1036,14 @@ def _final_reply(response, pre_saved: int) -> str:
     return "סליחה, לא הצלחתי לענות הפעם. נסה שוב."
 
 
-def get_response(phone: str, message: str, sender_name: str = "") -> str:
-    response, pre_saved = _run_gemini(phone, message)
+def get_response(
+    phone: str,
+    message: str,
+    sender_name: str = "",
+    media_bytes: bytes | None = None,
+    media_mime: str | None = None,
+) -> str:
+    response, pre_saved = _run_gemini(phone, message, media_bytes, media_mime)
     afc_calls = getattr(response, "automatic_function_calling_history", None) or []
     if afc_calls:
         logger.info(f"Function calls executed: {len(afc_calls)}")
@@ -1027,9 +1053,15 @@ def get_response(phone: str, message: str, sender_name: str = "") -> str:
     return reply
 
 
-def get_response_with_trace(phone: str, message: str, sender_name: str = "") -> tuple[str, list[dict]]:
+def get_response_with_trace(
+    phone: str,
+    message: str,
+    sender_name: str = "",
+    media_bytes: bytes | None = None,
+    media_mime: str | None = None,
+) -> tuple[str, list[dict]]:
     """Same as get_response but also returns the tool call trace for debug."""
-    response, pre_saved = _run_gemini(phone, message)
+    response, pre_saved = _run_gemini(phone, message, media_bytes, media_mime)
     trace = _afc_trace(response)
     reply = _final_reply(response, pre_saved)
     save_message(phone, "user", message)

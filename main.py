@@ -33,6 +33,34 @@ logger = logging.getLogger("miki")
 _seen_messages: dict[str, float] = {}
 DEDUP_WINDOW = 60
 
+# Gemini 2.5 Flash supports inline media; documented limit is ~20MB.
+# We cap below that to leave headroom for the request envelope.
+MEDIA_MAX_BYTES = 18 * 1024 * 1024
+
+_MEDIA_TYPES = {"imageMessage", "audioMessage", "videoMessage", "documentMessage"}
+
+_MEDIA_DEFAULT_MIME = {
+    "imageMessage": "image/jpeg",
+    "audioMessage": "audio/ogg",
+    "videoMessage": "video/mp4",
+    "documentMessage": "application/pdf",
+}
+
+_MEDIA_PLACEHOLDER = {
+    "imageMessage": "[תמונה ללא כיתוב]",
+    "audioMessage": "[הודעה קולית]",
+    "videoMessage": "[סרטון]",
+    "documentMessage": "[מסמך]",
+}
+
+
+async def _download_green_api_media(download_url: str) -> bytes:
+    """Fetch a media file from Green API's CDN. Caller handles errors."""
+    async with httpx.AsyncClient() as client:
+        response = await client.get(download_url, timeout=60)
+        response.raise_for_status()
+        return response.content
+
 
 def _cleanup_seen():
     now = time.time()
@@ -122,19 +150,40 @@ async def webhook(request: Request):
 
     message_data = data.get("messageData", {})
     message_type = message_data.get("typeMessage")
-    if message_type != "textMessage":
-        return {"ok": True, "skipped": message_type}
 
     sender_data = data.get("senderData", {})
     chat_id = sender_data.get("chatId", "")
     sender_name = sender_data.get("senderName", "")
-    text = message_data.get("textMessageData", {}).get("textMessage", "")
     message_id = data.get("idMessage", "")
+
+    text = ""
+    media_bytes: bytes | None = None
+    media_mime: str | None = None
+
+    if message_type == "textMessage":
+        text = message_data.get("textMessageData", {}).get("textMessage", "")
+    elif message_type in _MEDIA_TYPES:
+        file_data = message_data.get("fileMessageData", {})
+        download_url = file_data.get("downloadUrl") or ""
+        if not download_url:
+            return {"ok": True, "skipped": "media_without_url"}
+        try:
+            media_bytes = await _download_green_api_media(download_url)
+        except Exception as e:
+            logger.exception(f"media download failed: {e}")
+            return {"ok": True, "skipped": "media_download_failed"}
+        if len(media_bytes) > MEDIA_MAX_BYTES:
+            return {"ok": True, "skipped": "media_too_large", "size": len(media_bytes)}
+        raw_mime = (file_data.get("mimeType") or "").split(";")[0].strip()
+        media_mime = raw_mime or _MEDIA_DEFAULT_MIME.get(message_type, "application/octet-stream")
+        text = file_data.get("caption") or _MEDIA_PLACEHOLDER.get(message_type, "[קובץ]")
+    else:
+        return {"ok": True, "skipped": message_type}
 
     if "@g.us" in chat_id:
         return {"ok": True, "skipped": "group_message"}
 
-    if not text.strip():
+    if not text.strip() and not media_bytes:
         return {"ok": True, "skipped": "empty"}
 
     _cleanup_seen()
@@ -143,11 +192,17 @@ async def webhook(request: Request):
     _seen_messages[message_id] = time.time()
 
     phone = chat_id.replace("@c.us", "")
-    logger.info(f"Message from {sender_name} ({phone}): {text[:80]}")
+    if media_bytes:
+        logger.info(
+            f"Media {message_type} from {sender_name} ({phone}) "
+            f"mime={media_mime} bytes={len(media_bytes)} caption={text[:60]}"
+        )
+    else:
+        logger.info(f"Message from {sender_name} ({phone}): {text[:80]}")
     is_owner = chat_id == settings.MIKI_OWNER_CHAT_ID
 
     try:
-        reply = get_response(phone, text, sender_name)
+        reply = get_response(phone, text, sender_name, media_bytes, media_mime)
     except Exception as e:
         logger.exception(f"Agent error: {e}")
         debug_text = await notify_owner_error(
