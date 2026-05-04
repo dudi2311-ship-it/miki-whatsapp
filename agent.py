@@ -730,21 +730,38 @@ def _extract_text(response) -> str:
         return ""
 
 
+_REMEMBER_TRIGGERS = (
+    "תזכור ש", "תזכור עליי", "תזכור עלי", "זכור ש",
+    "תרשום ש", "תרשום אצלך", "תוסיף לזיכרון",
+)
+
+
+def _looks_like_remember_intent(message: str) -> bool:
+    text = (message or "").strip()
+    return any(t in text for t in _REMEMBER_TRIGGERS)
+
+
 def _run_gemini(phone: str, message: str):
     history = get_history(phone, limit=settings.MAX_HISTORY)
     contents = _to_gemini_contents(history, message)
 
-    config = types.GenerateContentConfig(
+    afc_kwargs = {"disable": False, "maximum_remote_calls": 8}
+    config_kwargs = dict(
         system_instruction=_build_system_prompt(),
         tools=_TOOLS,
-        automatic_function_calling=types.AutomaticFunctionCallingConfig(
-            disable=False,
-            maximum_remote_calls=8,
-        ),
+        automatic_function_calling=types.AutomaticFunctionCallingConfig(**afc_kwargs),
         max_output_tokens=2000,
         temperature=0.7,
     )
+    if _looks_like_remember_intent(message):
+        config_kwargs["tool_config"] = types.ToolConfig(
+            function_calling_config=types.FunctionCallingConfig(
+                mode="ANY",
+                allowed_function_names=["remember_fact"],
+            )
+        )
 
+    config = types.GenerateContentConfig(**config_kwargs)
     response = _client.models.generate_content(
         model=settings.GEMINI_MODEL,
         contents=contents,
