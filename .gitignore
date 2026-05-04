@@ -9,3 +9,4 @@ venv/
 *.db
 conversations.db
 .DS_Store
+contacts.csv
