@@ -4,10 +4,17 @@ Stores message history per phone number for multi-turn conversations.
 Persistent across redeploys, viewable in the Supabase dashboard.
 """
 
+import calendar
 import logging
+from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
+
 from supabase import create_client, Client
 
 from config import settings
+
+ISRAEL_TZ = ZoneInfo("Asia/Jerusalem")
+_WEEKDAY_INDEX = {"Mon": 0, "Tue": 1, "Wed": 2, "Thu": 3, "Fri": 4, "Sat": 5, "Sun": 6}
 
 logger = logging.getLogger("miki.database")
 
@@ -123,16 +130,71 @@ def list_mirrored_events_today(today_yyyy_mm_dd: str) -> list[dict]:
     return response.data or []
 
 
-def create_reminder(chat_id: str, text: str, fire_at_iso: str) -> dict:
-    """Insert a pending reminder. Returns the new row."""
-    response = (
-        _get_client()
-        .table("reminders")
-        .insert({"chat_id": chat_id, "text": text, "fire_at": fire_at_iso})
-        .execute()
-    )
+def create_reminder(
+    chat_id: str,
+    text: str,
+    fire_at_iso: str,
+    recurrence: str | None = None,
+) -> dict:
+    """Insert a pending reminder. Returns the new row.
+
+    recurrence is None for a one-shot, or a pattern: 'daily', 'weekly:Sun,Tue',
+    'monthly:15'. The first fire is at fire_at_iso; later fires are computed
+    after each delivery in mark_reminder_fired.
+    """
+    payload = {"chat_id": chat_id, "text": text, "fire_at": fire_at_iso}
+    if recurrence:
+        payload["recurrence"] = recurrence
+    response = _get_client().table("reminders").insert(payload).execute()
     rows = response.data or []
     return rows[0] if rows else {}
+
+
+def compute_next_fire_iso(recurrence: str, current_fire_at_iso: str) -> str | None:
+    """Return the next fire_at for a recurring reminder, or None if invalid."""
+    rule = (recurrence or "").strip()
+    if not rule:
+        return None
+    try:
+        current = datetime.fromisoformat(current_fire_at_iso)
+    except ValueError:
+        return None
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=ISRAEL_TZ)
+
+    if rule == "daily":
+        return (current + timedelta(days=1)).isoformat()
+
+    if rule.startswith("weekly:"):
+        wanted = []
+        for token in rule.split(":", 1)[1].split(","):
+            idx = _WEEKDAY_INDEX.get(token.strip().capitalize()[:3])
+            if idx is not None:
+                wanted.append(idx)
+        if not wanted:
+            return None
+        wanted_set = set(wanted)
+        for delta in range(1, 8):
+            candidate = current + timedelta(days=delta)
+            if candidate.weekday() in wanted_set:
+                return candidate.isoformat()
+        return None
+
+    if rule.startswith("monthly:"):
+        try:
+            day_of_month = int(rule.split(":", 1)[1])
+        except ValueError:
+            return None
+        year = current.year
+        month = current.month + 1
+        if month > 12:
+            month = 1
+            year += 1
+        last_day = calendar.monthrange(year, month)[1]
+        target_day = min(day_of_month, last_day)
+        return current.replace(year=year, month=month, day=target_day).isoformat()
+
+    return None
 
 
 def list_due_reminders(now_iso: str) -> list[dict]:
@@ -165,12 +227,65 @@ def list_pending_reminders(chat_id: str, limit: int = 20) -> list[dict]:
 
 
 def mark_reminder_fired(reminder_id: str) -> None:
-    """Mark a single reminder as already delivered."""
-    _get_client().table("reminders").update({"fired": True}).eq(
-        "id", reminder_id
-    ).execute()
+    """Handle a delivered reminder.
+
+    For one-shot reminders → mark fired=True.
+    For recurring reminders → advance fire_at to the next occurrence and
+    leave fired=False so /cron/check-reminders picks it up next time.
+    """
+    client = _get_client()
+    response = (
+        client.table("reminders")
+        .select("id, fire_at, recurrence")
+        .eq("id", reminder_id)
+        .limit(1)
+        .execute()
+    )
+    rows = response.data or []
+    row = rows[0] if rows else None
+    if row and row.get("recurrence"):
+        next_iso = compute_next_fire_iso(row["recurrence"], row["fire_at"])
+        if next_iso:
+            client.table("reminders").update({"fire_at": next_iso}).eq(
+                "id", reminder_id
+            ).execute()
+            return
+    client.table("reminders").update({"fired": True}).eq("id", reminder_id).execute()
 
 
 def cancel_reminder(reminder_id: str) -> None:
     """Hard-delete a reminder by id."""
     _get_client().table("reminders").delete().eq("id", reminder_id).execute()
+
+
+def add_fact(chat_id: str, category: str, content: str) -> dict:
+    """Save a long-term fact. Returns the new row."""
+    response = (
+        _get_client()
+        .table("facts")
+        .insert({"chat_id": chat_id, "category": category, "content": content})
+        .execute()
+    )
+    rows = response.data or []
+    return rows[0] if rows else {}
+
+
+def list_facts(chat_id: str, category: str | None = None) -> list[dict]:
+    """Return all facts for a chat, optionally filtered by category."""
+    query = (
+        _get_client()
+        .table("facts")
+        .select("id, category, content, created_at")
+        .eq("chat_id", chat_id)
+        .order("category")
+        .order("created_at")
+    )
+    if category:
+        query = query.eq("category", category)
+    response = query.execute()
+    return response.data or []
+
+
+def remove_fact(fact_id: str) -> None:
+    """Hard-delete a fact by id."""
+    _get_client().table("facts").delete().eq("id", fact_id).execute()

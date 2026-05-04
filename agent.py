@@ -397,28 +397,39 @@ def send_whatsapp_to(chat_id: str, message: str) -> dict:
         return {"error": str(e)}
 
 
-def set_reminder(text: str, fire_at_iso: str) -> dict:
-    """תזמן תזכורת ב-WhatsApp לזמן עתידי.
+def set_reminder(text: str, fire_at_iso: str, recurrence: str = "") -> dict:
+    """תזמן תזכורת ב-WhatsApp — חד פעמית או חוזרת.
 
     שימוש: כשדודי אומר "תזכיר לי X בשעה Y" / "בעוד שעה תזכיר לי..." / "מחר ב-9 תזכיר לי...".
     חובה להמיר זמן יחסי לזמן מוחלט בעזרת השעה הנוכחית מה-system prompt לפני הקריאה.
 
     Args:
         text: תוכן התזכורת בלשון ציווי קצרה (למשל "להתקשר לאמא").
-        fire_at_iso: זמן הירי בפורמט ISO 8601 עם אזור זמן ישראל,
+        fire_at_iso: זמן הירי הראשון בפורמט ISO 8601 עם אזור זמן ישראל,
             למשל '2026-05-04T18:00:00+03:00'.
+        recurrence: ריק לתזכורת חד פעמית. לחזרה: 'daily' / 'weekly:Sun,Tue,Thu' /
+            'monthly:15'. ימי השבוע באנגלית קצר (Sun, Mon, Tue, Wed, Thu, Fri, Sat).
+            דוגמאות: "כל יום בשעה 7" → fire_at_iso=המחר ב-07:00, recurrence='daily'.
+            "כל ראשון ב-9" → fire_at_iso=הראשון הקרוב ב-9, recurrence='weekly:Sun'.
+            "ב-1 לחודש" → fire_at_iso=ה-1 הקרוב, recurrence='monthly:1'.
 
     Returns:
-        dict עם id ו-fire_at של התזכורת שנוצרה, או 'error'.
+        dict עם id, fire_at, recurrence, או 'error'.
     """
     try:
         from database import create_reminder as _create
-        result = _create(settings.MIKI_OWNER_CHAT_ID, text, fire_at_iso)
+        result = _create(
+            settings.MIKI_OWNER_CHAT_ID,
+            text,
+            fire_at_iso,
+            recurrence=recurrence or None,
+        )
         return {
             "created": True,
             "id": str(result.get("id", "")),
             "fire_at": fire_at_iso,
             "text": text,
+            "recurrence": recurrence or None,
         }
     except Exception as e:
         logger.exception("set_reminder failed")
@@ -454,6 +465,76 @@ def cancel_reminder_by_id(reminder_id: str) -> dict:
         return {"cancelled": True, "id": reminder_id}
     except Exception as e:
         logger.exception("cancel_reminder_by_id failed")
+        return {"error": str(e)}
+
+
+def remember_fact(category: str, content: str) -> dict:
+    """שמור עובדה ארוכת טווח על דודי שמיקי תזכור בכל שיחה.
+
+    שימוש: כשדודי משתף משהו אישי שכדאי לזכור לטווח ארוך — העדפות, פרטי משפחה,
+    בריאות, מקום עבודה, תחומי עניין, אלרגיות, שמות חברים. אחרי השמירה אמור לדודי
+    מה נשמר.
+
+    אל תשמור: דברים זמניים (משימות פתוחות, רגשות חולפים), פרטים שכבר שמורים,
+    מידע שדודי לא ביקש מפורשות שתזכור.
+
+    Args:
+        category: קטגוריה קצרה באנגלית. דוגמאות: 'preferences', 'family', 'health',
+            'work', 'interests', 'projects'. תאחיד עם קטגוריות קיימות (ראה list_facts).
+        content: העובדה עצמה במשפט קצר בעברית. דוגמאות: "אוהב לקום ב-7",
+            "אשתו ליאור היא שרת בריאות הציבור", "אלרגי לחומוס".
+
+    Returns:
+        dict עם id ופרטי העובדה שנשמרה.
+    """
+    try:
+        from database import add_fact as _add
+        result = _add(settings.MIKI_OWNER_CHAT_ID, category, content)
+        return {
+            "saved": True,
+            "id": str(result.get("id", "")),
+            "category": category,
+            "content": content,
+        }
+    except Exception as e:
+        logger.exception("remember_fact failed")
+        return {"error": str(e)}
+
+
+def list_my_facts(category: str = "") -> dict:
+    """החזר את העובדות הארוכות-טווח שמיקי שומרת על דודי.
+
+    שימוש: כשדודי שואל "מה אתה זוכר עליי", "אילו העדפות שמרת", או כשצריך
+    למצוא id לפני forget_fact. ה-system prompt כבר מקבל אוטומטית את העובדות,
+    אז אין צורך לקרוא לזה כדי להשתמש בהן בתשובה רגילה.
+
+    Args:
+        category: סנן לקטגוריה אחת ('preferences' / 'family' / וכו'). ריק = הכל.
+
+    Returns:
+        dict עם 'facts' (id, category, content, created_at) ו-'count'.
+    """
+    try:
+        from database import list_facts as _list
+        rows = _list(settings.MIKI_OWNER_CHAT_ID, category=category or None)
+        return {"facts": rows, "count": len(rows)}
+    except Exception as e:
+        logger.exception("list_my_facts failed")
+        return {"error": str(e)}
+
+
+def forget_fact(fact_id: str) -> dict:
+    """מחק עובדה לפי ה-id שלה (מ-list_my_facts).
+
+    שימוש: כשדודי אומר "תשכח שX", "תוריד את העובדה ש...", "כבר לא רלוונטי" —
+    קודם list_my_facts כדי למצוא את ה-id, ואז קריאה לכאן.
+    """
+    try:
+        from database import remove_fact as _remove
+        _remove(fact_id)
+        return {"forgotten": True, "id": fact_id}
+    except Exception as e:
+        logger.exception("forget_fact failed")
         return {"error": str(e)}
 
 
@@ -515,15 +596,45 @@ _TOOLS = [
     set_reminder,
     list_reminders,
     cancel_reminder_by_id,
+    remember_fact,
+    list_my_facts,
+    forget_fact,
     web_search,
 ]
 
 
+def _format_facts_block() -> str:
+    """Group remembered facts by category and format for the system prompt."""
+    if not settings.MIKI_OWNER_CHAT_ID:
+        return ""
+    try:
+        from database import list_facts
+        facts = list_facts(settings.MIKI_OWNER_CHAT_ID)
+    except Exception:
+        logger.exception("_format_facts_block failed to load facts")
+        return ""
+    if not facts:
+        return ""
+    by_category: dict[str, list[str]] = {}
+    for f in facts:
+        cat = f.get("category", "other") or "other"
+        by_category.setdefault(cat, []).append(f.get("content", ""))
+    lines = ["## עובדות שאני זוכר על דודי"]
+    for cat in sorted(by_category):
+        lines.append(f"**{cat}:**")
+        for content in by_category[cat]:
+            if content:
+                lines.append(f"- {content}")
+    return "\n".join(lines)
+
+
 def _build_system_prompt() -> str:
-    """System prompt with current Israel time injected."""
+    """System prompt with current Israel time + remembered facts injected."""
     now = datetime.now(ISRAEL_TZ)
     weekday_he = ["שני", "שלישי", "רביעי", "חמישי", "שישי", "שבת", "ראשון"][now.weekday()]
-    return f"""{settings.SYSTEM_PROMPT}
+    facts_block = _format_facts_block()
+    facts_section = f"\n\n{facts_block}" if facts_block else ""
+    return f"""{settings.SYSTEM_PROMPT}{facts_section}
 
 יש לך גישה לכלים אמיתיים. **חובה** להשתמש בהם — לא לדמיין או להמציא תשובות:
 - list_my_events — לקריאת אירועים מהיומן
@@ -539,23 +650,39 @@ def _build_system_prompt() -> str:
 - read_whatsapp_chat — קריאת היסטוריית צ'אט/קבוצה ספציפיים לפי chat_id
 - find_whatsapp_chats — חיפוש איש קשר/קבוצה לפי שם (לקבל chat_id)
 - send_whatsapp_to — שליחת ווטסאפ לאדם/קבוצה. **רק אחרי אישור מפורש של דודי לנמען ולתוכן**.
-- set_reminder — תזמון תזכורת WhatsApp עתידית. **המר זמן יחסי לזמן מוחלט** (ISO 8601 עם +03:00) לפני הקריאה.
-- list_reminders — הצגת תזכורות קרובות שטרם ירו (תמיד קרא לזה כשדודי שואל "אילו תזכורות יש לי")
+- set_reminder — תזמון תזכורת. **המר זמן יחסי לזמן מוחלט** (ISO 8601 עם +03:00). תומך בחזרה: 'daily' / 'weekly:Sun,Tue' / 'monthly:15'.
+- list_reminders — הצגת תזכורות קרובות שטרם ירו
 - cancel_reminder_by_id — ביטול תזכורת לפי id
+- remember_fact — שמירת עובדה ארוכת טווח (העדפות, משפחה, בריאות, וכו')
+- list_my_facts — הצגת עובדות שמורות (בעיקר כדי למצוא id לפני forget_fact)
+- forget_fact — מחיקת עובדה לפי id
 - web_search — חיפוש חי באינטרנט (חדשות, מחירים, שעות פתיחה, מזג אוויר, כל דבר שיכול להשתנות)
 
 כשדודי שואל על היומן/המיילים או מבקש להוסיף/לשנות/למחוק — **קרא לפונקציה המתאימה ישירות** ואז ענה לו עם התוצאה.
 כשדודי שואל על משהו שדורש מידע עדכני (מה קרה, מה המחיר, מתי פתוח) — **קרא ל-web_search** במקום לנחש.
-לעולם אל תגיד "אני אוסיף" / "אני אבדוק" / "אזכיר לך" / "תזכורת מוגדרת" בלי לקרוא לפונקציה.
+לעולם אל תגיד "אני אוסיף" / "אני אבדוק" / "אזכיר לך" / "תזכורת מוגדרת" / "אני אזכור" בלי לקרוא לפונקציה.
 
 ⚠️ **תזכורות — חוק ברזל:**
 כל ביטוי שדומה ל"תזכיר לי", "תיתן לי תזכורת", "תזמן", "אל תיתן לי לשכוח", "תעיר אותי", "תזכיר ב-...", "בעוד X דקות/שעות תזכיר" — **חייב** קריאה ישירה ל-`set_reminder`.
 שלבי החובה לפני כל אישור לדודי:
 1. חשב את `fire_at_iso` המוחלט מהשעה הנוכחית למטה (לא לבקש מדודי לחשב).
-2. קרא ל-`set_reminder(text, fire_at_iso)`.
-3. רק אחרי שקיבלת `created: true` — אישר לדודי "תזכורת נשמרה ל-HH:MM".
-4. אם קיבלת `error` — אמור לדודי שלא הצלחת לשמור.
+2. אם זו תזכורת חוזרת ("כל יום", "כל ראשון", "ב-1 לחודש") — קבע את ה-recurrence המתאים. אחרת — recurrence ריק.
+3. קרא ל-`set_reminder(text, fire_at_iso, recurrence)`.
+4. רק אחרי שקיבלת `created: true` — אישר לדודי "תזכורת נשמרה ל-HH:MM" + ציין אם חוזרת.
+5. אם קיבלת `error` — אמור לדודי שלא הצלחת לשמור.
 **אסור** לכתוב "אזכיר לך" או "סבבה אזכיר" בלי לקרוא קודם ל-`set_reminder`. גם אם הזמן רחוק. גם אם כבר אמרת בעבר באותה שיחה.
+
+⚠️ **עובדות ארוכות-טווח — מתי לזכור:**
+דודי משתף הרבה דברים. **רק חלקם** ראויים לשמירה ל-`remember_fact`. שמור כשדודי משתף:
+- העדפות יציבות ("אני אוהב X", "שונא Y", "עדיף לי Z")
+- פרטי משפחה/חברים יציבים (שמות, מקצועות, יום הולדת)
+- בריאות (אלרגיות, תרופות קבועות, מצבים רפואיים)
+- תחומי עניין/תחביבים
+- מידע על פרויקטים פעילים שיהיה רלוונטי לאורך זמן
+
+**אל תשמור**: משימות פתוחות (זה לתזכורות), רגשות חולפים, פרטים קצרי-מועד (לאן הולכים הערב), מידע שכבר רשום בעובדות למעלה.
+לפני שמירה, בדוק את העובדות שכבר רשומות למעלה — אל תכפיל. אם עובדה השתנתה: forget_fact הישנה ואז remember_fact חדשה.
+אחרי שמירה — אישר בקצרה ("שמרתי שאתה אוהב לקום ב-7"). אל תשאל "האם לזכור?" — תחליט לבד לפי הקריטריונים.
 
 היומן כולל הכל — אישי ועבודה. אין סינון אוטומטי. אירועי עבודה מסומנים ב-`is_work: true` כדי שתוכל להזכיר את ההקשר אם רלוונטי.
 
