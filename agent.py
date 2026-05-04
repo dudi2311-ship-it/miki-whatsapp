@@ -56,6 +56,7 @@ def create_calendar_event(
     duration_minutes: int = 60,
     description: str = "",
     location: str = "",
+    attendees: list[str] = [],
 ) -> dict:
     """Create a new event in the user's Google Calendar.
 
@@ -65,8 +66,14 @@ def create_calendar_event(
             '2026-04-30T10:00:00+03:00'. If the user gives relative time
             ('tomorrow at 10'), convert to absolute first using current time.
         duration_minutes: Length in minutes (default 60).
-        description: Optional notes / agenda.
+        description: Optional notes / agenda. **Do NOT put attendee emails here**
+            — use the attendees field instead.
         location: Optional location.
+        attendees: List of email addresses to invite. Empty list = no attendees.
+            If the user mentions a person by name ('תוסיף את ליאור'), look up
+            the email in remember_fact / list_my_facts (category 'contacts' or
+            'family') first. If you can't find it, ask the user for the email
+            instead of stuffing the name into description.
 
     Returns:
         The created event details.
@@ -78,6 +85,7 @@ def create_calendar_event(
             duration_minutes=duration_minutes,
             description=description,
             location=location,
+            attendees=attendees or None,
         )
         return {"created": event}
     except Exception as e:
@@ -92,18 +100,27 @@ def update_calendar_event(
     end_iso: str = "",
     description: str = "",
     location: str = "",
+    add_attendees: list[str] = [],
+    remove_attendees: list[str] = [],
+    replace_attendees: list[str] = [],
 ) -> dict:
     """Update an existing event. Use the event_id from list_my_events.
 
-    Pass only the fields you want to change; leave others as empty string.
+    Pass only the fields you want to change; leave others as empty string / list.
 
     Args:
         event_id: The event's ID (from list_my_events).
         title: New title (empty to keep current).
         start_iso: New start (ISO 8601 with timezone, empty to keep current).
         end_iso: New end (ISO 8601 with timezone, empty to keep current).
-        description: New description (empty to keep current).
+        description: New description (empty to keep current). **Do NOT put
+            attendee emails here** — use the attendee fields below.
         location: New location (empty to keep current).
+        add_attendees: Emails to add to the existing attendee list. Use this
+            for "תוסיף את X לזימון" — DO NOT touch description.
+        remove_attendees: Emails to remove from the attendee list.
+        replace_attendees: Replace the entire attendee list with this one. Only
+            use for "תחליף את כל המוזמנים ב-...". Otherwise use add/remove.
     """
     try:
         event = calendar_service.update_event(
@@ -113,6 +130,9 @@ def update_calendar_event(
             end_iso=end_iso or None,
             description=description or None,
             location=location or None,
+            add_attendees=add_attendees or None,
+            remove_attendees=remove_attendees or None,
+            replace_attendees=replace_attendees or None,
         )
         return {"updated": event}
     except Exception as e:
@@ -486,7 +506,7 @@ def remember_fact(category: str, content: str) -> dict:
         category: קטגוריה באנגלית, אחת מאלה:
             'preferences' (העדפות) / 'family' (משפחה) / 'health' (בריאות) /
             'work' (עבודה) / 'interests' (תחביבים) / 'projects' (פרויקטים) /
-            'other' (אחר).
+            'contacts' (כתובות מייל של אנשי קשר חוזרים) / 'other' (אחר).
         content: העובדה במשפט קצר בעברית. דוגמאות: "אוהב לקום ב-7",
             "אשתו ליאור היא שרת בריאות הציבור", "אלרגי לחומוס".
 
@@ -668,6 +688,21 @@ def _build_system_prompt() -> str:
 כשדודי שואל על משהו שדורש מידע עדכני (מה קרה, מה המחיר, מתי פתוח) — **קרא ל-web_search** במקום לנחש.
 לעולם אל תגיד "אני אוסיף" / "אני אבדוק" / "אזכיר לך" / "תזכורת מוגדרת" / "אני אזכור" בלי לקרוא לפונקציה.
 
+⚠️ **מוזמנים לאירוע — חוק ברזל:**
+כשדודי מבקש "תוסיף את X לזימון/לאירוע/לפגישה", "תזמין את X", "תוריד את Y מהאירוע", "תחליף את המוזמנים" — **אסור** להכניס את השם/המייל ל-`description`. חובה להעביר את כתובות המייל בשדה המתאים:
+- אירוע חדש → `create_calendar_event(..., attendees=[...])`
+- הוספה לאירוע קיים → `update_calendar_event(event_id=..., add_attendees=[...])`
+- הסרה → `update_calendar_event(event_id=..., remove_attendees=[...])`
+- החלפה מלאה → `update_calendar_event(event_id=..., replace_attendees=[...])`
+
+איך משיגים את כתובת המייל מתוך שם:
+1. קודם בדוק אם המייל מופיע בעובדות שלמעלה (סעיף "עובדות שאני זוכר על דודי", בעיקר קטגוריות contacts / family / work).
+2. אם אין שם — קרא ל-`list_my_facts(category="contacts")` (ואז family אם לא מצאת) וחפש את השם.
+3. אם עדיין לא מצאת — **שאל את דודי מה הכתובת**, אל תנחש ואל תמציא דומיין.
+4. אחרי שדודי נותן כתובת חדשה של איש קשר חוזר — קרא ל-`remember_fact(category="contacts", content="<שם> — <email>")` כדי שלא תצטרך לשאול שוב.
+
+אסור להגיד "הוספתי את X" בלי שקראת בפועל ל-`update_calendar_event`/`create_calendar_event` עם `attendees`/`add_attendees` שמכיל מייל אמיתי.
+
 ⚠️ **תזכורות — חוק ברזל:**
 כל ביטוי שדומה ל"תזכיר לי", "תיתן לי תזכורת", "תזמן", "אל תיתן לי לשכוח", "תעיר אותי", "תזכיר ב-...", "בעוד X דקות/שעות תזכיר" — **חייב** קריאה ישירה ל-`set_reminder`.
 שלבי החובה לפני כל אישור לדודי:
@@ -821,11 +856,12 @@ def _extract_and_save_facts(message: str) -> int:
     return saved
 
 
-def _run_gemini(phone: str, message: str):
+def _run_gemini(phone: str, message: str) -> tuple[object, int]:
+    pre_saved = 0
     if _looks_like_remember_intent(message):
         try:
-            count = _extract_and_save_facts(message)
-            logger.info(f"Pre-saved {count} facts from remember intent")
+            pre_saved = _extract_and_save_facts(message)
+            logger.info(f"Pre-saved {pre_saved} facts from remember intent")
         except Exception:
             logger.exception("pre-save facts pipeline failed")
 
@@ -839,7 +875,7 @@ def _run_gemini(phone: str, message: str):
             disable=False,
             maximum_remote_calls=8,
         ),
-        max_output_tokens=2000,
+        max_output_tokens=3000,
         temperature=0.7,
     )
     response = _client.models.generate_content(
@@ -847,7 +883,7 @@ def _run_gemini(phone: str, message: str):
         contents=contents,
         config=config,
     )
-    return response
+    return response, pre_saved
 
 
 def _afc_trace(response) -> list[dict]:
@@ -867,17 +903,22 @@ def _afc_trace(response) -> list[dict]:
     return calls
 
 
+def _final_reply(response, pre_saved: int) -> str:
+    reply = _extract_text(response) or getattr(response, "text", "") or ""
+    reply = reply.strip()
+    if reply:
+        return reply
+    if pre_saved > 0:
+        return f"שמרתי {pre_saved} עובדות חדשות. 📝"
+    return "סליחה, לא הצלחתי לענות הפעם. נסה שוב."
+
+
 def get_response(phone: str, message: str, sender_name: str = "") -> str:
-    response = _run_gemini(phone, message)
+    response, pre_saved = _run_gemini(phone, message)
     afc_calls = getattr(response, "automatic_function_calling_history", None) or []
     if afc_calls:
         logger.info(f"Function calls executed: {len(afc_calls)}")
-
-    reply = _extract_text(response) or getattr(response, "text", "") or ""
-    reply = reply.strip()
-    if not reply:
-        reply = "סליחה, לא הצלחתי לענות הפעם. נסה שוב."
-
+    reply = _final_reply(response, pre_saved)
     save_message(phone, "user", message)
     save_message(phone, "assistant", reply)
     return reply
@@ -885,12 +926,9 @@ def get_response(phone: str, message: str, sender_name: str = "") -> str:
 
 def get_response_with_trace(phone: str, message: str, sender_name: str = "") -> tuple[str, list[dict]]:
     """Same as get_response but also returns the tool call trace for debug."""
-    response = _run_gemini(phone, message)
+    response, pre_saved = _run_gemini(phone, message)
     trace = _afc_trace(response)
-    reply = _extract_text(response) or getattr(response, "text", "") or ""
-    reply = reply.strip()
-    if not reply:
-        reply = "סליחה, לא הצלחתי לענות הפעם. נסה שוב."
+    reply = _final_reply(response, pre_saved)
     save_message(phone, "user", message)
     save_message(phone, "assistant", reply)
     return reply, trace
