@@ -330,3 +330,118 @@ def list_facts(chat_id: str, category: str | None = None) -> list[dict]:
 def remove_fact(fact_id: str) -> None:
     """Hard-delete a fact by id."""
     _get_client().table("facts").delete().eq("id", fact_id).execute()
+
+
+def add_contact(
+    chat_id: str,
+    name: str,
+    email: str | None = None,
+    phone: str | None = None,
+    aliases: list[str] | None = None,
+    notes: str | None = None,
+) -> dict:
+    """Insert or update a contact.
+
+    Match strategy: if email is given and a contact with that email exists,
+    update it. Otherwise if a contact with the same name exists (case
+    insensitive), update it. Otherwise insert a new row.
+    """
+    client = _get_client()
+    name_clean = (name or "").strip()
+    if not name_clean:
+        return {}
+
+    email_clean = (email or "").strip() or None
+    phone_clean = (phone or "").strip() or None
+    aliases_clean = [a.strip() for a in (aliases or []) if a and a.strip()]
+
+    existing = None
+    if email_clean:
+        match = (
+            client.table("contacts")
+            .select("*")
+            .eq("chat_id", chat_id)
+            .ilike("email", email_clean)
+            .limit(1)
+            .execute()
+        )
+        if match.data:
+            existing = match.data[0]
+    if existing is None:
+        match = (
+            client.table("contacts")
+            .select("*")
+            .eq("chat_id", chat_id)
+            .ilike("name", name_clean)
+            .limit(1)
+            .execute()
+        )
+        if match.data:
+            existing = match.data[0]
+
+    if existing:
+        merged_aliases = list({*(existing.get("aliases") or []), *aliases_clean})
+        payload = {
+            "name": name_clean,
+            "email": email_clean or existing.get("email"),
+            "phone": phone_clean or existing.get("phone"),
+            "aliases": merged_aliases,
+            "notes": notes if notes is not None else existing.get("notes"),
+            "updated_at": datetime.now(ISRAEL_TZ).isoformat(),
+        }
+        response = (
+            client.table("contacts")
+            .update(payload)
+            .eq("id", existing["id"])
+            .execute()
+        )
+        rows = response.data or []
+        return rows[0] if rows else existing
+
+    payload = {
+        "chat_id": chat_id,
+        "name": name_clean,
+        "email": email_clean,
+        "phone": phone_clean,
+        "aliases": aliases_clean,
+        "notes": notes,
+    }
+    response = client.table("contacts").insert(payload).execute()
+    rows = response.data or []
+    return rows[0] if rows else {}
+
+
+def find_contacts(chat_id: str, query: str) -> list[dict]:
+    """Find contacts whose name or aliases contain the query (case insensitive)."""
+    q = (query or "").strip()
+    if not q:
+        return []
+    pattern = f"%{q}%"
+    response = (
+        _get_client()
+        .table("contacts")
+        .select("*")
+        .eq("chat_id", chat_id)
+        .or_(f"name.ilike.{pattern},aliases.cs.{{{q}}}")
+        .limit(10)
+        .execute()
+    )
+    return response.data or []
+
+
+def list_contacts(chat_id: str) -> list[dict]:
+    """Return every contact for a chat, sorted by name."""
+    response = (
+        _get_client()
+        .table("contacts")
+        .select("*")
+        .eq("chat_id", chat_id)
+        .order("name")
+        .execute()
+    )
+    return response.data or []
+
+
+def remove_contact(contact_id: str) -> None:
+    """Hard-delete a contact by id."""
+    _get_client().table("contacts").delete().eq("id", contact_id).execute()

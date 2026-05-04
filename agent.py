@@ -506,7 +506,9 @@ def remember_fact(category: str, content: str) -> dict:
         category: קטגוריה באנגלית, אחת מאלה:
             'preferences' (העדפות) / 'family' (משפחה) / 'health' (בריאות) /
             'work' (עבודה) / 'interests' (תחביבים) / 'projects' (פרויקטים) /
-            'contacts' (כתובות מייל של אנשי קשר חוזרים) / 'other' (אחר).
+            'other' (אחר).
+            **לא** להשתמש כאן בקטגוריה 'contacts' — אנשי קשר נשמרים
+            דרך save_contact, לא remember_fact.
         content: העובדה במשפט קצר בעברית. דוגמאות: "אוהב לקום ב-7",
             "אשתו ליאור היא שרת בריאות הציבור", "אלרגי לחומוס".
 
@@ -561,6 +563,99 @@ def forget_fact(fact_id: str) -> dict:
         return {"forgotten": True, "id": fact_id}
     except Exception as e:
         logger.exception("forget_fact failed")
+        return {"error": str(e)}
+
+
+def save_contact(
+    name: str,
+    email: str = "",
+    phone: str = "",
+    aliases: list[str] = [],
+    notes: str = "",
+) -> dict:
+    """Save (or update) a contact in דודי's address book.
+
+    Use this whenever דודי gives you someone's email or phone — even casually
+    ('המייל של ליאור הוא lior@gmail.com', 'תוסיף את אמא — 050-...'). Also
+    when you successfully add a new attendee to a calendar event using an
+    email דודי just typed — save it for next time so you don't have to ask
+    again.
+
+    If the contact already exists (matched by email, then by name), this
+    updates the existing row instead of creating a duplicate.
+
+    Args:
+        name: The person's primary name in Hebrew or English ('ליאור').
+        email: Email address. Empty if not known yet.
+        phone: Phone (any format). Empty if not known.
+        aliases: Other names דודי might use ('אמא' for the same person, or
+            English/Hebrew variants). Empty list if none.
+        notes: Free text — relationship, role, anything that helps later.
+
+    Returns:
+        dict with the saved contact (id, name, email, phone, aliases).
+    """
+    try:
+        from database import add_contact as _add
+        result = _add(
+            settings.MIKI_OWNER_CHAT_ID,
+            name=name,
+            email=email or None,
+            phone=phone or None,
+            aliases=aliases or None,
+            notes=notes or None,
+        )
+        return {"saved": True, "contact": result}
+    except Exception as e:
+        logger.exception("save_contact failed")
+        return {"error": str(e)}
+
+
+def find_contact(query: str) -> dict:
+    """Look up a contact by name or alias.
+
+    **חובה** לקרוא לזה לפני שמוסיפים מישהו ל-attendees כשדודי נתן רק שם
+    ('תוסיף את ליאור'). אם יש תוצאה — משתמשים במייל שלה. אם אין — שואלים
+    את דודי מה המייל ושומרים עם save_contact.
+
+    Args:
+        query: Name fragment ('ליאור', 'אמא'). Case insensitive, partial match.
+
+    Returns:
+        dict with 'matches' (list of contacts) and 'count'.
+    """
+    try:
+        from database import find_contacts as _find
+        rows = _find(settings.MIKI_OWNER_CHAT_ID, query)
+        return {"matches": rows, "count": len(rows)}
+    except Exception as e:
+        logger.exception("find_contact failed")
+        return {"error": str(e)}
+
+
+def list_my_contacts() -> dict:
+    """Return every saved contact (name, email, phone, aliases).
+
+    Use when דודי asks 'אילו אנשי קשר שמרת', 'תראה לי את אנשי הקשר' or when
+    you need to find an id before forget_contact.
+    """
+    try:
+        from database import list_contacts as _list
+        rows = _list(settings.MIKI_OWNER_CHAT_ID)
+        return {"contacts": rows, "count": len(rows)}
+    except Exception as e:
+        logger.exception("list_my_contacts failed")
+        return {"error": str(e)}
+
+
+def forget_contact(contact_id: str) -> dict:
+    """Delete a contact by id (from list_my_contacts or find_contact)."""
+    try:
+        from database import remove_contact as _remove
+        _remove(contact_id)
+        return {"forgotten": True, "id": contact_id}
+    except Exception as e:
+        logger.exception("forget_contact failed")
         return {"error": str(e)}
 
 
@@ -625,6 +720,10 @@ _TOOLS = [
     remember_fact,
     list_my_facts,
     forget_fact,
+    save_contact,
+    find_contact,
+    list_my_contacts,
+    forget_contact,
     web_search,
 ]
 
@@ -682,6 +781,10 @@ def _build_system_prompt() -> str:
 - remember_fact — שמירת עובדה ארוכת טווח (העדפות, משפחה, בריאות, וכו')
 - list_my_facts — הצגת עובדות שמורות (בעיקר כדי למצוא id לפני forget_fact)
 - forget_fact — מחיקת עובדה לפי id
+- save_contact — שמירה/עדכון של איש קשר במאגר (שם, מייל, טלפון, כינויים)
+- find_contact — חיפוש איש קשר לפי שם/כינוי (לקבל את המייל לצורך הזמנה לאירוע)
+- list_my_contacts — הצגת כל אנשי הקשר השמורים
+- forget_contact — מחיקת איש קשר לפי id
 - web_search — חיפוש חי באינטרנט (חדשות, מחירים, שעות פתיחה, מזג אוויר, כל דבר שיכול להשתנות)
 
 כשדודי שואל על היומן/המיילים או מבקש להוסיף/לשנות/למחוק — **קרא לפונקציה המתאימה ישירות** ואז ענה לו עם התוצאה.
@@ -696,10 +799,10 @@ def _build_system_prompt() -> str:
 - החלפה מלאה → `update_calendar_event(event_id=..., replace_attendees=[...])`
 
 איך משיגים את כתובת המייל מתוך שם:
-1. קודם בדוק אם המייל מופיע בעובדות שלמעלה (סעיף "עובדות שאני זוכר על דודי", בעיקר קטגוריות contacts / family / work).
-2. אם אין שם — קרא ל-`list_my_facts(category="contacts")` (ואז family אם לא מצאת) וחפש את השם.
+1. קרא ל-`find_contact(query="<שם>")` — זה החיפוש העיקרי במאגר אנשי הקשר.
+2. אם לא נמצא, נסה גם בעובדות (קטגוריות family / work) למקרה שזה איש קשר ישן שעוד לא הועבר למאגר.
 3. אם עדיין לא מצאת — **שאל את דודי מה הכתובת**, אל תנחש ואל תמציא דומיין.
-4. אחרי שדודי נותן כתובת חדשה של איש קשר חוזר — קרא ל-`remember_fact(category="contacts", content="<שם> — <email>")` כדי שלא תצטרך לשאול שוב.
+4. **חובה** אחרי שדודי נותן מייל של איש קשר חוזר — קרא ל-`save_contact(name="<שם>", email="<email>")` כדי שלא תצטרך לשאול שוב. אם דודי מציין כינוי ('אמא של ליאור', 'הבוס שלי') — תוסיף אותו ב-aliases.
 
 אסור להגיד "הוספתי את X" בלי שקראת בפועל ל-`update_calendar_event`/`create_calendar_event` עם `attendees`/`add_attendees` שמכיל מייל אמיתי.
 
