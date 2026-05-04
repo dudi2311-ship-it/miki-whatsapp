@@ -733,6 +733,30 @@ def _extract_text(response) -> str:
 _REMEMBER_KEYWORDS = ("תזכור", "זכור", "תרשום", "תוסיף לזיכרון", "תזכרי")
 _FORGET_HINTS = ("אל תזכור", "אל תרשום", "תשכח")
 
+_FACT_EXTRACTION_SCHEMA = {
+    "type": "OBJECT",
+    "properties": {
+        "facts": {
+            "type": "ARRAY",
+            "items": {
+                "type": "OBJECT",
+                "properties": {
+                    "category": {
+                        "type": "STRING",
+                        "description": "One of: preferences, family, health, work, interests, projects, other.",
+                    },
+                    "content": {
+                        "type": "STRING",
+                        "description": "The fact in Hebrew, one short sentence.",
+                    },
+                },
+                "required": ["category", "content"],
+            },
+        }
+    },
+    "required": ["facts"],
+}
+
 
 def _looks_like_remember_intent(message: str) -> bool:
     text = (message or "").strip()
@@ -741,27 +765,83 @@ def _looks_like_remember_intent(message: str) -> bool:
     return any(k in text for k in _REMEMBER_KEYWORDS)
 
 
+def _extract_and_save_facts(message: str) -> int:
+    """Use Gemini structured output to pull facts out of a remember-intent
+    message and persist them. Returns the number of facts saved."""
+    import json as _json
+
+    prompt = (
+        "חלץ מהטקסט את העובדות שדודי רוצה שיזכרו עליו לטווח ארוך. "
+        "כל עובדה כאלמנט נפרד במערך. category באנגלית מתוך: "
+        "preferences / family / health / work / interests / projects / other. "
+        "content בעברית, משפט קצר. אם אין עובדות שמורות-טווח-ארוך, "
+        "החזר {\"facts\": []}.\n"
+        "טקסט המשתמש: " + (message or "")
+    )
+    try:
+        response = _client.models.generate_content(
+            model=settings.GEMINI_MODEL,
+            contents=prompt,
+            config=types.GenerateContentConfig(
+                response_mime_type="application/json",
+                response_schema=_FACT_EXTRACTION_SCHEMA,
+                temperature=0.1,
+                max_output_tokens=1000,
+            ),
+        )
+    except Exception:
+        logger.exception("fact extraction call failed")
+        return 0
+
+    raw = _extract_text(response) or getattr(response, "text", "") or ""
+    try:
+        data = _json.loads(raw)
+    except (ValueError, TypeError):
+        logger.warning(f"fact extraction returned non-json: {raw[:200]}")
+        return 0
+
+    facts = data.get("facts") or []
+    if not isinstance(facts, list):
+        return 0
+
+    from database import add_fact
+    saved = 0
+    for f in facts:
+        if not isinstance(f, dict):
+            continue
+        category = (f.get("category") or "other").strip()
+        content = (f.get("content") or "").strip()
+        if not content:
+            continue
+        try:
+            add_fact(settings.MIKI_OWNER_CHAT_ID, category, content)
+            saved += 1
+        except Exception:
+            logger.exception("add_fact failed during extraction save")
+    return saved
+
+
 def _run_gemini(phone: str, message: str):
+    if _looks_like_remember_intent(message):
+        try:
+            count = _extract_and_save_facts(message)
+            logger.info(f"Pre-saved {count} facts from remember intent")
+        except Exception:
+            logger.exception("pre-save facts pipeline failed")
+
     history = get_history(phone, limit=settings.MAX_HISTORY)
     contents = _to_gemini_contents(history, message)
 
-    afc_kwargs = {"disable": False, "maximum_remote_calls": 8}
-    config_kwargs = dict(
+    config = types.GenerateContentConfig(
         system_instruction=_build_system_prompt(),
         tools=_TOOLS,
-        automatic_function_calling=types.AutomaticFunctionCallingConfig(**afc_kwargs),
+        automatic_function_calling=types.AutomaticFunctionCallingConfig(
+            disable=False,
+            maximum_remote_calls=8,
+        ),
         max_output_tokens=2000,
         temperature=0.7,
     )
-    if _looks_like_remember_intent(message):
-        config_kwargs["tool_config"] = types.ToolConfig(
-            function_calling_config=types.FunctionCallingConfig(
-                mode="ANY",
-                allowed_function_names=["remember_fact"],
-            )
-        )
-
-    config = types.GenerateContentConfig(**config_kwargs)
     response = _client.models.generate_content(
         model=settings.GEMINI_MODEL,
         contents=contents,

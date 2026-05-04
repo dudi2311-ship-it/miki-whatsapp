@@ -259,10 +259,25 @@ def cancel_reminder(reminder_id: str) -> None:
 
 
 def add_fact(chat_id: str, category: str, content: str) -> dict:
-    """Save a long-term fact. Returns the new row."""
+    """Save a long-term fact. Skips insertion if an identical fact already exists.
+
+    Returns the existing row when it's a duplicate, or the newly inserted one.
+    """
+    client = _get_client()
+    existing = (
+        client.table("facts")
+        .select("id, category, content")
+        .eq("chat_id", chat_id)
+        .eq("category", category)
+        .eq("content", content)
+        .limit(1)
+        .execute()
+    )
+    if existing.data:
+        return existing.data[0]
+
     response = (
-        _get_client()
-        .table("facts")
+        client.table("facts")
         .insert({"chat_id": chat_id, "category": category, "content": content})
         .execute()
     )
