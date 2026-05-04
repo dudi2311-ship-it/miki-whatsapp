@@ -700,6 +700,37 @@ def web_search(query: str) -> dict:
         return {"error": str(e)}
 
 
+def search_conversations(query: str, limit: int = 10) -> dict:
+    """חפש בכל שיחות העבר של דודי עם מיקי לפי טקסט חופשי.
+
+    שימוש: כשדודי שואל "מה אמרתי על X לפני שבועיים", "מתי דיברנו על Y",
+    "מה ענית לי בנושא Z", "מצא את ההודעה ש...". מסתכל על כל היסטוריית
+    ההודעות (לא רק 20 האחרונות שב-context).
+
+    Args:
+        query: מחרוזת חיפוש (חלקית, רישיות לא מבדילה). דוגמאות:
+            'מוסך', 'יום הולדת', 'ארוחה'.
+        limit: מספר תוצאות מהחדש לישן (ברירת מחדל 10, מקסימום 30).
+
+    Returns:
+        dict עם 'matches' (role, content, created_at) ו-'count'.
+    """
+    try:
+        from database import search_messages_history
+        owner_phone = (
+            settings.MIKI_OWNER_CHAT_ID
+            .replace("@c.us", "")
+            .replace("@g.us", "")
+        )
+        if not owner_phone:
+            return {"error": "MIKI_OWNER_CHAT_ID is not set"}
+        rows = search_messages_history(owner_phone, query, limit=min(limit, 30))
+        return {"matches": rows, "count": len(rows)}
+    except Exception as e:
+        logger.exception("search_conversations failed")
+        return {"error": str(e)}
+
+
 _TOOLS = [
     list_my_events,
     create_calendar_event,
@@ -724,6 +755,7 @@ _TOOLS = [
     find_contact,
     list_my_contacts,
     forget_contact,
+    search_conversations,
     web_search,
 ]
 
@@ -785,6 +817,7 @@ def _build_system_prompt() -> str:
 - find_contact — חיפוש איש קשר לפי שם/כינוי (לקבל את המייל לצורך הזמנה לאירוע)
 - list_my_contacts — הצגת כל אנשי הקשר השמורים
 - forget_contact — מחיקת איש קשר לפי id
+- search_conversations — חיפוש בכל ההיסטוריה של השיחות (מעבר ל-20 ההודעות שב-context). השתמש כשדודי שואל על משהו שאמרת/אמר בעבר אבל לא רואים בהיסטוריה הקרובה.
 - web_search — חיפוש חי באינטרנט (חדשות, מחירים, שעות פתיחה, מזג אוויר, כל דבר שיכול להשתנות)
 
 כשדודי שואל על היומן/המיילים או מבקש להוסיף/לשנות/למחוק — **קרא לפונקציה המתאימה ישירות** ואז ענה לו עם התוצאה.

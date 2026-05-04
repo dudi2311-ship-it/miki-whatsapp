@@ -83,6 +83,28 @@ def get_history(phone: str, limit: int = 20) -> list[dict]:
     return [{"role": r["role"], "content": r["content"]} for r in rows]
 
 
+def search_messages_history(phone: str, query: str, limit: int = 10) -> list[dict]:
+    """Substring search across the conversation log for one chat.
+
+    Case-insensitive ilike against the `content` column. Returns the most
+    recent matches first with role + content + created_at.
+    """
+    if not query or not query.strip():
+        return []
+    needle = "%" + query.strip().replace("%", r"\%").replace("_", r"\_") + "%"
+    response = (
+        _get_client()
+        .table("messages")
+        .select("role, content, created_at")
+        .eq("phone", phone)
+        .ilike("content", needle)
+        .order("created_at", desc=True)
+        .limit(limit)
+        .execute()
+    )
+    return response.data or []
+
+
 def get_state(key: str) -> str | None:
     """Read a value from the agent_state key/value table."""
     response = (
