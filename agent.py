@@ -730,15 +730,15 @@ def _extract_text(response) -> str:
         return ""
 
 
-_REMEMBER_TRIGGERS = (
-    "תזכור ש", "תזכור עליי", "תזכור עלי", "זכור ש",
-    "תרשום ש", "תרשום אצלך", "תוסיף לזיכרון",
-)
+_REMEMBER_KEYWORDS = ("תזכור", "זכור", "תרשום", "תוסיף לזיכרון", "תזכרי")
+_FORGET_HINTS = ("אל תזכור", "אל תרשום", "תשכח")
 
 
 def _looks_like_remember_intent(message: str) -> bool:
     text = (message or "").strip()
-    return any(t in text for t in _REMEMBER_TRIGGERS)
+    if any(h in text for h in _FORGET_HINTS):
+        return False
+    return any(k in text for k in _REMEMBER_KEYWORDS)
 
 
 def _run_gemini(phone: str, message: str):
