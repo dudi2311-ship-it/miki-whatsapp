@@ -70,6 +70,7 @@ async def webhook_test(request: Request):
     to non-existent test numbers.
 
     Returns a detailed error trace on failure so we can debug remotely.
+    Pass ?debug=1 to also include the list of tool calls Gemini made.
     """
     import traceback
     try:
@@ -82,6 +83,18 @@ async def webhook_test(request: Request):
         phone = data.get("senderData", {}).get("chatId", "").replace("@c.us", "")
         if not text.strip() or not phone:
             return {"error": "missing text or phone"}
+        debug = request.query_params.get("debug") == "1"
+        if debug:
+            from agent import get_response_with_trace
+            reply, tool_trace = get_response_with_trace(
+                phone, text, data.get("senderData", {}).get("senderName", "")
+            )
+            return {
+                "phone": phone,
+                "user_message": text,
+                "miki_reply": reply,
+                "tool_calls": tool_trace,
+            }
         reply = get_response(phone, text, data.get("senderData", {}).get("senderName", ""))
         return {"phone": phone, "user_message": text, "miki_reply": reply}
     except Exception as e:

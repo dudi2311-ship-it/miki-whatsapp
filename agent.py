@@ -724,7 +724,7 @@ def _extract_text(response) -> str:
         return ""
 
 
-def get_response(phone: str, message: str, sender_name: str = "") -> str:
+def _run_gemini(phone: str, message: str):
     history = get_history(phone, limit=settings.MAX_HISTORY)
     contents = _to_gemini_contents(history, message)
 
@@ -744,7 +744,28 @@ def get_response(phone: str, message: str, sender_name: str = "") -> str:
         contents=contents,
         config=config,
     )
+    return response
 
+
+def _afc_trace(response) -> list[dict]:
+    """Extract a compact list of tool calls and their args/results."""
+    history = getattr(response, "automatic_function_calling_history", None) or []
+    calls: list[dict] = []
+    for content in history:
+        for part in getattr(content, "parts", []) or []:
+            fc = getattr(part, "function_call", None)
+            if fc and getattr(fc, "name", None):
+                args = dict(fc.args) if getattr(fc, "args", None) else {}
+                calls.append({"name": fc.name, "args": args, "kind": "call"})
+            fr = getattr(part, "function_response", None)
+            if fr and getattr(fr, "name", None):
+                resp = dict(fr.response) if getattr(fr, "response", None) else {}
+                calls.append({"name": fr.name, "result": resp, "kind": "result"})
+    return calls
+
+
+def get_response(phone: str, message: str, sender_name: str = "") -> str:
+    response = _run_gemini(phone, message)
     afc_calls = getattr(response, "automatic_function_calling_history", None) or []
     if afc_calls:
         logger.info(f"Function calls executed: {len(afc_calls)}")
@@ -756,5 +777,17 @@ def get_response(phone: str, message: str, sender_name: str = "") -> str:
 
     save_message(phone, "user", message)
     save_message(phone, "assistant", reply)
-
     return reply
+
+
+def get_response_with_trace(phone: str, message: str, sender_name: str = "") -> tuple[str, list[dict]]:
+    """Same as get_response but also returns the tool call trace for debug."""
+    response = _run_gemini(phone, message)
+    trace = _afc_trace(response)
+    reply = _extract_text(response) or getattr(response, "text", "") or ""
+    reply = reply.strip()
+    if not reply:
+        reply = "סליחה, לא הצלחתי לענות הפעם. נסה שוב."
+    save_message(phone, "user", message)
+    save_message(phone, "assistant", reply)
+    return reply, trace
