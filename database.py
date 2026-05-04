@@ -6,6 +6,7 @@ Persistent across redeploys, viewable in the Supabase dashboard.
 
 import calendar
 import logging
+import re
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
@@ -15,6 +16,24 @@ from config import settings
 
 ISRAEL_TZ = ZoneInfo("Asia/Jerusalem")
 _WEEKDAY_INDEX = {"Mon": 0, "Tue": 1, "Wed": 2, "Thu": 3, "Fri": 4, "Sat": 5, "Sun": 6}
+
+_FACT_LEADING_NAME = re.compile(r"^\s*דודי\s+")
+_FACT_TRAILING_PUNCT = re.compile(r"[.!?…]+\s*$")
+_FACT_WHITESPACE = re.compile(r"\s+")
+
+
+def _normalize_fact(content: str) -> str:
+    """Loose-match key for fact dedup.
+
+    Removes leading 'דודי ' (the agent talks about him in 3rd person),
+    strips trailing punctuation, collapses internal whitespace, lowercases.
+    """
+    if not content:
+        return ""
+    text = _FACT_LEADING_NAME.sub("", content)
+    text = _FACT_TRAILING_PUNCT.sub("", text)
+    text = _FACT_WHITESPACE.sub(" ", text).strip()
+    return text.lower()
 
 logger = logging.getLogger("miki.database")
 
@@ -259,22 +278,29 @@ def cancel_reminder(reminder_id: str) -> None:
 
 
 def add_fact(chat_id: str, category: str, content: str) -> dict:
-    """Save a long-term fact. Skips insertion if an identical fact already exists.
+    """Save a long-term fact.
+
+    Skips insertion if a near-identical fact already exists (same chat_id +
+    category, and content matches after normalization — punctuation and
+    leading 'דודי' are ignored).
 
     Returns the existing row when it's a duplicate, or the newly inserted one.
     """
     client = _get_client()
+    norm_new = _normalize_fact(content)
+    if not norm_new:
+        return {}
+
     existing = (
         client.table("facts")
         .select("id, category, content")
         .eq("chat_id", chat_id)
         .eq("category", category)
-        .eq("content", content)
-        .limit(1)
         .execute()
     )
-    if existing.data:
-        return existing.data[0]
+    for row in existing.data or []:
+        if _normalize_fact(row.get("content", "")) == norm_new:
+            return row
 
     response = (
         client.table("facts")
