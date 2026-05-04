@@ -160,28 +160,45 @@ async def webhook(request: Request):
     media_bytes: bytes | None = None
     media_mime: str | None = None
 
+    media_error_reply: str | None = None
+
     if message_type == "textMessage":
         text = message_data.get("textMessageData", {}).get("textMessage", "")
     elif message_type in _MEDIA_TYPES:
         file_data = message_data.get("fileMessageData", {})
         download_url = file_data.get("downloadUrl") or ""
         if not download_url:
-            return {"ok": True, "skipped": "media_without_url"}
-        try:
-            media_bytes = await _download_green_api_media(download_url)
-        except Exception as e:
-            logger.exception(f"media download failed: {e}")
-            return {"ok": True, "skipped": "media_download_failed"}
-        if len(media_bytes) > MEDIA_MAX_BYTES:
-            return {"ok": True, "skipped": "media_too_large", "size": len(media_bytes)}
-        raw_mime = (file_data.get("mimeType") or "").split(";")[0].strip()
-        media_mime = raw_mime or _MEDIA_DEFAULT_MIME.get(message_type, "application/octet-stream")
-        text = file_data.get("caption") or _MEDIA_PLACEHOLDER.get(message_type, "[קובץ]")
+            media_error_reply = "לא הגיע אליי לינק להוריד את הקובץ. נסה לשלוח שוב."
+        else:
+            try:
+                media_bytes = await _download_green_api_media(download_url)
+            except Exception as e:
+                logger.exception(f"media download failed: {e}")
+                media_error_reply = "לא הצלחתי להוריד את הקובץ ששלחת. נסה שוב בעוד רגע."
+                media_bytes = None
+            if media_bytes is not None and len(media_bytes) > MEDIA_MAX_BYTES:
+                size_mb = len(media_bytes) / (1024 * 1024)
+                media_error_reply = (
+                    f"הקובץ גדול מדי בשבילי ({size_mb:.1f}MB). "
+                    f"המקסימום הוא {MEDIA_MAX_BYTES // (1024*1024)}MB."
+                )
+                media_bytes = None
+        if media_bytes is not None:
+            raw_mime = (file_data.get("mimeType") or "").split(";")[0].strip()
+            media_mime = raw_mime or _MEDIA_DEFAULT_MIME.get(message_type, "application/octet-stream")
+            text = file_data.get("caption") or _MEDIA_PLACEHOLDER.get(message_type, "[קובץ]")
     else:
         return {"ok": True, "skipped": message_type}
 
     if "@g.us" in chat_id:
         return {"ok": True, "skipped": "group_message"}
+
+    if media_error_reply:
+        try:
+            await send_whatsapp_message(chat_id, media_error_reply)
+        except Exception:
+            logger.exception("failed to send media-error reply")
+        return {"ok": True, "media_error": True}
 
     if not text.strip() and not media_bytes:
         return {"ok": True, "skipped": "empty"}
