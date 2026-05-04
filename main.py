@@ -481,39 +481,6 @@ async def check_mail(x_cron_token: str = Header(default="")):
     return {"ok": True, "new_mail": len(msgs), "preview": text[:300]}
 
 
-@app.post("/debug/dedupe-facts")
-async def debug_dedupe_facts(x_cron_token: str = Header(default="")):
-    """One-shot cleanup: collapse facts whose content is the same after the
-    Python-side normalization (lowercase, strip leading 'דודי', strip trailing
-    punctuation, collapse whitespace). Keeps the oldest row of each group.
-
-    Protected by CRON_TOKEN. Safe to call multiple times — idempotent after
-    the first run.
-    """
-    if not settings.CRON_TOKEN or x_cron_token != settings.CRON_TOKEN:
-        raise HTTPException(status_code=401, detail="bad token")
-
-    from database import _get_client, _normalize_fact
-
-    client = _get_client()
-    rows = client.table("facts").select(
-        "id, chat_id, category, content, created_at"
-    ).order("created_at").execute().data or []
-
-    seen: dict[tuple[str, str, str], str] = {}
-    to_delete: list[str] = []
-    for row in rows:
-        key = (row["chat_id"], row["category"], _normalize_fact(row.get("content", "")))
-        if key in seen:
-            to_delete.append(row["id"])
-        else:
-            seen[key] = row["id"]
-
-    if to_delete:
-        client.table("facts").delete().in_("id", to_delete).execute()
-    return {"ok": True, "scanned": len(rows), "kept": len(seen), "deleted": len(to_delete)}
-
-
 @app.post("/cron/morning-brief")
 async def morning_brief(x_cron_token: str = Header(default="")):
     """Daily morning brief — pushed to the owner via WhatsApp.
