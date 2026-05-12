@@ -360,6 +360,25 @@ def _short_from(from_header: str) -> str:
     return from_header.strip()[:35]
 
 
+async def _send_morning_brief_once() -> dict:
+    """Push the daily morning brief — at most once per Israel-day.
+
+    Idempotent via agent_state: whichever caller fires first wins, subsequent
+    calls become no-ops. Used by both the scheduled cron and the post-sync hook
+    so the brief lands as soon as fresh Outlook data arrives, without doubling.
+    """
+    today = datetime.now(ISRAEL_TZ).strftime("%Y-%m-%d")
+    state_key = f"morning_brief_sent:{today}"
+    if get_state(state_key):
+        return {"sent": False, "reason": "already_sent_today"}
+    if not settings.MIKI_OWNER_CHAT_ID:
+        return {"sent": False, "reason": "owner_chat_id_not_set"}
+    brief = _format_morning_brief()
+    await send_whatsapp_message(settings.MIKI_OWNER_CHAT_ID, brief)
+    set_state(state_key, "1")
+    return {"sent": True, "preview": brief[:300]}
+
+
 @app.post("/sync/iphone-events")
 async def sync_iphone_events(request: Request, x_cron_token: str = Header(default="")):
     """Receive a fresh batch of iPhone calendar events (the iOS Shortcut bridge).
@@ -388,7 +407,14 @@ async def sync_iphone_events(request: Request, x_cron_token: str = Header(defaul
         logger.exception("sync_iphone_events failed")
         return JSONResponse({"error": str(e)}, status_code=500)
 
-    return {"ok": True, "stored": count}
+    brief_result: dict = {"sent": False, "reason": "skipped"}
+    try:
+        brief_result = await _send_morning_brief_once()
+    except Exception as e:
+        logger.exception("post-sync brief failed")
+        brief_result = {"sent": False, "reason": "exception", "error": str(e)}
+
+    return {"ok": True, "stored": count, "brief": brief_result}
 
 
 @app.post("/cron/check-upcoming")
@@ -557,22 +583,23 @@ async def check_mail(x_cron_token: str = Header(default="")):
 async def morning_brief(x_cron_token: str = Header(default="")):
     """Daily morning brief — pushed to the owner via WhatsApp.
 
-    Protected by a shared secret in the X-Cron-Token header. Configure an
-    external scheduler (cron-job.org, Render Cron, etc.) to POST here once a day.
+    Acts as a fallback for the post-sync hook: if no Outlook sync arrived by
+    the scheduled time, this still delivers a brief (Google Calendar + iPhone
+    mirror + mail only). Idempotent — won't double up with a brief already
+    triggered by an Outlook sync earlier in the same day.
     """
     if not settings.CRON_TOKEN or x_cron_token != settings.CRON_TOKEN:
         raise HTTPException(status_code=401, detail="bad token")
     if not settings.MIKI_OWNER_CHAT_ID:
         raise HTTPException(status_code=500, detail="MIKI_OWNER_CHAT_ID not set")
 
-    brief = _format_morning_brief()
     try:
-        await send_whatsapp_message(settings.MIKI_OWNER_CHAT_ID, brief)
+        result = await _send_morning_brief_once()
     except Exception as e:
         logger.exception("morning brief send failed")
         await notify_owner_error("cron/morning-brief (send)", e)
         return JSONResponse({"error": str(e)}, status_code=500)
-    return {"ok": True, "sent_to": settings.MIKI_OWNER_CHAT_ID, "preview": brief[:300]}
+    return {"ok": True, **result}
 
 
 if __name__ == "__main__":
