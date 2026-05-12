@@ -434,7 +434,11 @@ def add_contact(
 
 
 def find_contacts(chat_id: str, query: str) -> list[dict]:
-    """Find contacts whose name or aliases contain the query (case insensitive)."""
+    """Find contacts whose name or aliases contain the query (case insensitive).
+
+    Contacts with a non-null email are returned first so the agent has something
+    usable to attach to calendar invites; emailless contacts follow.
+    """
     q = (query or "").strip()
     if not q:
         return []
@@ -445,7 +449,9 @@ def find_contacts(chat_id: str, query: str) -> list[dict]:
         .select("*")
         .eq("chat_id", chat_id)
         .or_(f"name.ilike.{pattern},aliases.cs.{{{q}}}")
-        .limit(10)
+        .order("email", desc=False, nullsfirst=False)
+        .order("name", desc=False)
+        .limit(25)
         .execute()
     )
     return response.data or []
